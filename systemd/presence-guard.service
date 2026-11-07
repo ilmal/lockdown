@@ -1,0 +1,13 @@
+[Unit]
+Description=presence-guard face presence watchdog
+After=graphical-session.target
+PartOf=graphical-session.target
+
+[Service]
+Type=simple
+ExecStart=%h/programing/presence-guard/.venv/bin/presence-guard watch
+Restart=on-failure
+RestartSec=30
+
+[Install]
+WantedBy=graphical-session.target

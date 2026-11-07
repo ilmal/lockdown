@@ -1,0 +1,32 @@
+# Copy to ~/.config/presence-guard/config.toml and edit.
+
+[camera]
+# `/dev/video0` is the RGB sensor on a Dell Precision 5570. The IR node
+# (`/dev/video2`, greyscale only) sees the same face but far worse: the Haar
+# detector in this project is trained on visible-light faces and scores 3/10
+# frames on IR versus 10/10 on RGB. Start on RGB; see docs/design-notes.md if
+# you want to try IR later.
+device = "/dev/video0"
+width = 640
+height = 480
+warmup_frames = 4
+
+[verify]
+# LBPH distance; lower is a closer match. Re-tune with `presence-guard calibrate`.
+threshold = 62.0
+# Consecutive "wrong person" checks before locking.
+impostor_checks = 2
+# Minutes of "nobody here" before locking the screen.
+absent_grace_minutes = 5
+
+[guard]
+# Seconds between checks.
+interval_seconds = 300
+# Never evaluate while the session is already locked.
+skip_when_locked = true
+
+[remote]
+host = "100.x.y.z"
+port = 8791
+# Path to the bearer token. Keep it outside this repo.
+token_file = "~/.claude/secrets/presence-guard-token"

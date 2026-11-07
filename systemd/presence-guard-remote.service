@@ -1,0 +1,13 @@
+[Unit]
+Description=presence-guard remote kill switch (Tailscale only)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=%h/programing/presence-guard/.venv/bin/presence-guard serve
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=default.target

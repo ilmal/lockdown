@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "presence-guard"
+version = "0.1.0"
+description = "Continuous IR-camera face-presence verification with a Tailscale-only remote kill switch"
+requires-python = ">=3.11"
+dependencies = [
+    "opencv-contrib-python-headless>=4.9",
+    "numpy>=1.26",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8"]
+
+[project.scripts]
+presence-guard = "presence_guard.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+presence_guard = ["data/*.xml"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
