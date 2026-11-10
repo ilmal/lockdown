@@ -139,6 +139,54 @@ Config lives at `~/.config/presence-guard/config.toml` (see
 - For poweroff without a password prompt: a polkit rule or a narrow sudoers
   entry — see `docs/remote-kill.md`
 
+## Keeping your session while killing the disk key
+
+Poweroff destroys the in-RAM LUKS key but loses your tabs. Hibernation gives
+you both — RAM is written to swap, the machine powers fully off, and everything
+comes back on boot. Because swap here is inside the encrypted volume, the saved
+image is protected by LUKS too.
+
+```bash
+presence-guard hibernate --dry-run
+```
+
+This refuses rather than hangs when the machine is not set up for it — see
+`docs/hibernate.md` for the requirements and the setup, and read the warning
+about a failed first attempt before enabling it.
+
+## Repository hygiene
+
+This repo is public, so three guards are built in:
+
+- **`scripts/check-secrets.sh`** — scans files for private keys, cloud/API
+  tokens, JWT-shaped strings, tailnet addresses, personal home paths and
+  `password = "…"` assignments. It refuses to pass if any match.
+- **`.githooks/pre-commit`** — runs that scan on every commit. Enable it once per
+  clone with `./scripts/install-hooks.sh`.
+- **`scripts/push.sh`** — refuses to push a dirty tree and re-runs nothing that
+  has not already been scanned; used by the autopush cron.
+
+The scan is a safety net, not a licence: a pattern list cannot recognise every
+secret. The rule is still that no credential belongs in this tree.
+
+### Autopush (this machine)
+
+`crontab` runs every 15 minutes:
+
+```
+*/15 * * * * cd $HOME/programing/presence-guard && ./scripts/push.sh --commit >> $HOME/.local/share/lockdown-push.log 2>&1
+```
+
+`--commit` commits any dirty tree with a timestamp message, so unattended edits
+and Claude sessions end up in `github.com/ilmal/lockdown` on their own. If the
+secret scan fails, the commit does not happen and the reason lands in
+`~/.local/share/lockdown-push.log` — check that file first if a change never
+appears on GitHub.
+
+Local state lives in `~/.config/presence-guard/` and
+`~/.local/share/presence-guard/`, both outside the repository and both
+gitignored.
+
 ## The IR camera: measured, not assumed
 
 This laptop (Dell Precision 5570) has **two** UVC sensors. `/dev/video0` is RGB
