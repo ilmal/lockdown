@@ -74,3 +74,21 @@ class _FakeFile:
 
     def read(self):
         return "".join(self._lines)
+
+
+def test_preflight_says_reboot_when_setup_is_pending(monkeypatch):
+    """After setup but before reboot, the message must say 'reboot', not 'broken'."""
+    monkeypatch.setattr(session, "_mem_total_bytes", lambda: 8 * 2**30)
+    monkeypatch.setattr(session, "_swap_total_bytes", lambda: 64 * 2**30)
+    monkeypatch.setattr(session, "_read_resume", lambda: "0:0")
+    monkeypatch.setattr(
+        "builtins.open",
+        lambda path, *a, **k: _FakeFile(
+            "freeze mem disk\n" if "power/state" in str(path) else "GRUB_CMDLINE_LINUX_DEFAULT=\"resume=UUID=x\"\n"
+        ),
+    )
+
+    problems = session.hibernate_preflight()
+
+    assert len(problems) == 1
+    assert "reboot" in problems[0]

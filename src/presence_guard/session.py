@@ -119,10 +119,25 @@ def hibernate_preflight() -> list[str]:
         )
 
     if _read_resume() in ("", "0:0"):
-        problems.append(
-            "no resume device is configured; the kernel would not know where "
-            "to read the image from on boot"
-        )
+        # /sys/power/resume only reflects a resume= that the CURRENT boot got;
+        # a just-finished setup lives in the grub config and needs a reboot.
+        # /boot/grub/grub.cfg is root-only, so read the world-readable source.
+        pending_reboot = False
+        try:
+            with open("/etc/default/grub") as fh:
+                pending_reboot = "resume=" in fh.read()
+        except OSError:
+            pass
+        if pending_reboot:
+            problems.append(
+                "resume= is configured but this boot started before it took "
+                "effect; reboot once, then hibernation will work"
+            )
+        else:
+            problems.append(
+                "no resume device is configured; the kernel would not know where "
+                "to read the image from on boot"
+            )
     return problems
 
 
