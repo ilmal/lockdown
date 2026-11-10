@@ -88,3 +88,32 @@ presence-guard demo          # watch distance update live
 ```
 
 Move the phone away and watch the state flip at the thresholds.
+
+## Do you need to write an iOS app? The options, ranked
+
+Short answer: **no app is required for a usable result**, but nothing short of an
+app or a dedicated beacon gives you *stable identity*.
+
+| Option | Effort | Stable identity? | Distance? | Notes |
+|---|---|---|---|---|
+| **BLE beacon** (AirTag, Tile, cheap iBeacon) | Buy it (~300 kr) | **Yes** — fixed MAC | Yes, RSSI | Best effort/result ratio. Keep it on your keys or in your bag. |
+| **iOS Shortcut + periodic HTTP hit** | 10 min | Yes (it's your phone) | **No** — only "online" | Useless for proximity; listed because it's what people try first. |
+| **Own iOS app** (CoreLocation iBeacon ranging) | Days | **Yes** | **Yes, accurate** | The only phone-native way to get true ranging. Needs Xcode + a dev account for sideloading, re-sign every 7 days unless you pay. |
+| **Own iOS app** (BLE peripheral advertising a fixed UUID) | Days | **Yes** | Yes, coarse | Simpler than ranging; the laptop scans for that UUID. App must be foregrounded or use background modes. |
+| **Current heuristic** (any Apple advertiser) | Done | **No** | Coarse | Fine only because phone is one of three factors. |
+| Wi-Fi RTT (802.11mc) | — | — | — | iPhone does not expose this to third parties. Not an option. |
+| Find My / iCloud | — | — | — | No local API, cloud round-trip; not proximity. |
+
+### Why a beacon wins for your demo
+
+An iBeacon advertises a **fixed UUID/major/minor** and a **fixed address**, so the
+laptop can tell "your beacon" from "some iPhone nearby" and can log real,
+repeatable distances. That turns the phone factor from a heuristic into something
+you can actually defend in a demo, for the price of a keyring tag.
+
+### If you do write the app
+
+The least-work version is **not** ranging — it is a BLE peripheral that
+advertises one fixed service UUID, plus a laptop-side scan for that UUID. Ranging
+with `CLBeaconRegion` gives real metres but needs location permission and a
+background mode, and iOS throttles background ranging heavily.
