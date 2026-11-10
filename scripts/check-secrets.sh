@@ -1,6 +1,5 @@
 #!/usr/bin/env bash
-# Fail if anything staged or tracked looks like a secret.
-# Public repo: this is the last line of defence before a push.
+# Fail if anything staged looks like a secret. Public repo: last line of defence.
 set -uo pipefail
 
 fail=0
@@ -23,45 +22,39 @@ declare -a PATTERNS=(
   '(password|passwd|passphrase|secret|api[_-]?key|auth[_-]?token|bearer)[[:space:]]*[=:][[:space:]]*["'"'"'][^"'"'"']{8,}["'"'"']'
 )
 
-# Files that legitimately contain the patterns above (this scanner, its docs).
-declare -a ALLOW=(
-  'scripts/check-secrets.sh'
-)
-
-allowed() {
-  local file="$1" entry
-  for entry in "${ALLOW[@]}"; do
-    [ "$file" = "$entry" ] && return 0
-  done
-  return 1
-}
+# Files that legitimately contain the patterns above (this scanner itself).
+ALLOW='scripts/check-secrets.sh'
 
 scan_text() {
   local label="$1" text="$2" pattern
   for pattern in "${PATTERNS[@]}"; do
     if printf '%s' "$text" | grep -EqI -- "$pattern"; then
-      echo "  ✗ $label: matches /$pattern/" >&2
+      echo "  x $label: matches /$pattern/" >&2
       printf '%s' "$text" | grep -nEI -- "$pattern" | head -3 | sed 's/^/      /' >&2
       fail=1
     fi
   done
 }
 
-if git rev-parse --git-dir >/dev/null 2>&1; then
-  staged=$(git diff --cached --name-only --diff-filter=ACM 2>/dev/null)
-  for file in $staged; do
-    [ -f "$file" ] || continue
-    allowed "$file" && continue
-    case "$file" in
-      *.jpg|*.jpeg|*.png|*.npy|*.npz|*.tar|*.zip|*.AppImage) continue ;;
-    esac
-    scan_text "$file" "$(cat -- "$file")"
-  done
+git rev-parse --git-dir >/dev/null 2>&1 || { echo "not a git repo" >&2; exit 1; }
 
-  if [ -n "$staged" ] && printf '%s\n' "$staged" | grep -qE '^(\.env|.*\.pem|.*\.key|.*\.p12|.*token.*|.*\.crt)$'; then
-    echo "  ✗ staged file name looks like a credential: $(printf '%s\n' "$staged" | grep -E '^(\.env|.*\.pem|.*\.key|.*\.p12|.*token.*|.*\.crt)$' | tr '\n' ' ')" >&2
-    fail=1
-  fi
+staged=$(git diff --cached --name-only --diff-filter=ACM 2>/dev/null)
+
+for file in $staged; do
+  [ -f "$file" ] || continue
+  [ "$file" = "$ALLOW" ] && continue
+  case "$file" in
+    *.jpg|*.jpeg|*.png|*.npy|*.npz|*.tar|*.zip|*.AppImage) continue ;;
+  esac
+  scan_text "$file" "$(cat -- "$file")"
+done
+
+if [ -n "$staged" ] && printf '%s\n' "$staged" \
+    | grep -qE '^(\.env|.*\.pem|.*\.key|.*\.p12|.*token.*|.*\.crt)$'; then
+  echo "  x staged file name looks like a credential:" >&2
+  printf '%s\n' "$staged" | grep -E '^(\.env|.*\.pem|.*\.key|.*\.p12|.*token.*|.*\.crt)$' \
+    | sed 's/^/      /' >&2
+  fail=1
 fi
 
 if [ "$fail" -ne 0 ]; then
