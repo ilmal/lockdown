@@ -118,16 +118,3 @@ class ProximityEngine:
         self.last_reading = Reading(rssi=smoothed, meters=meters, samples=len(self.samples))
         return self.last_reading
 
-
-def tailscale_online(ip: str, timeout: int = 5) -> bool:
-    """True if the phone answers a tailnet ping. Proximity is NOT implied."""
-    try:
-        out = subprocess.run(
-            ["tailscale", "ping", "-c", "1", ip],
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-        )
-        return out.returncode == 0 and "pong" in out.stdout.lower()
-    except (OSError, subprocess.SubprocessError):
-        return False

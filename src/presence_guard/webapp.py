@@ -19,7 +19,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from . import camera, config, recognizer
 from .fingerprint import enrolled_fingers
 from .policy import FactorState, Policy
-from .proximity import ProximityEngine, rssi_to_meters, tailscale_online
+from .proximity import ProximityEngine, rssi_to_meters
 
 INDEX = """<!doctype html>
 <html><head><meta charset="utf-8"><title>Lockdown — live factors</title>
@@ -52,11 +52,33 @@ video,img{width:100%;border-radius:6px;background:#000;display:block}
 .mono{font-variant-numeric:tabular-nums}
 .matrix div{padding:5px 0;font-size:12px;color:var(--dim)}
 .matrix .on{color:var(--ok)}
+.tabs{display:flex;gap:8px;margin-bottom:14px;flex-wrap:wrap}
+.tab{background:var(--panel);border:1px solid var(--line);color:var(--dim);
+     padding:6px 14px;border-radius:999px;font:inherit;font-size:12px;cursor:pointer}
+.tab:hover{border-color:var(--accent);color:var(--fg)}
+.tab.on{background:rgba(88,166,255,.15);border-color:var(--accent);color:var(--accent)}
+/* focus mode: hide everything that is not the chosen card */
+body[data-view="face"]  [data-card="phone"],
+body[data-view="face"]  [data-card="policy"],
+body[data-view="phone"] [data-card="face"],
+body[data-view="phone"] [data-card="policy"],
+body[data-view="policy"] [data-card="face"],
+body[data-view="policy"] [data-card="phone"]{display:none}
+body[data-view="face"] .grid,
+body[data-view="phone"] .grid,
+body[data-view="policy"] .grid{grid-template-columns:minmax(0,760px)}
+body[data-view] [data-card="side"]{display:contents}
 </style></head><body>
 <h1>lockdown · live factors</h1>
 <div class="sub">read-only demo — nothing here locks or authenticates</div>
+<div class="tabs">
+  <button class="tab on" data-view="all">all</button>
+  <button class="tab" data-view="face">face only</button>
+  <button class="tab" data-view="phone">phone only</button>
+  <button class="tab" data-view="policy">policy only</button>
+</div>
 <div class="grid">
-  <div class="card">
+  <div class="card" data-card="face">
     <h2>face</h2>
     <img id="feed" src="/api/stream" alt="camera">
     <div class="row"><span>state</span><span id="face-state">—</span></div>
@@ -65,17 +87,16 @@ video,img{width:100%;border-radius:6px;background:#000;display:block}
     <div class="bar"><div class="fill" id="face-bar" style="width:0%"></div></div>
     <div class="sub" style="margin:6px 0 0">lower is a better match; bar fills toward the threshold</div>
   </div>
-  <div>
-    <div class="card" style="margin-bottom:16px">
+  <div data-card="side">
+    <div class="card" data-card="phone" style="margin-bottom:16px">
       <h2>phone proximity (BLE)</h2>
       <div class="big" id="phone-m"><span class="mono">—</span> <span style="font-size:13px;color:var(--dim)">m</span></div>
       <div class="row"><span>state</span><span id="phone-state">—</span></div>
       <div class="row"><span>rssi (smoothed)</span><span id="phone-rssi" class="mono">—</span></div>
-      <div class="row"><span>tailscale</span><span id="phone-ts">—</span></div>
       <div class="bar"><div class="fill" id="phone-bar" style="width:0%"></div></div>
       <div class="sub" style="margin:6px 0 0">near &lt; 2.5 m · far &gt; 6 m · hysteresis between</div>
     </div>
-    <div class="card">
+    <div class="card" data-card="policy">
       <h2>policy</h2>
       <div class="row"><span>fingerprint</span><span id="f-fp">—</span></div>
       <div class="row"><span>enrolled fingers</span><span id="f-enrolled">—</span></div>
@@ -85,6 +106,18 @@ video,img{width:100%;border-radius:6px;background:#000;display:block}
   </div>
 </div>
 <script>
+// Focus mode: remember the chosen view across reloads, and keep the tab
+// buttons in sync. Purely client-side; the server does not care.
+const saved = localStorage.getItem('lockdown-view') || 'all';
+document.body.dataset.view = saved;
+document.querySelectorAll('.tab').forEach(t => {
+  t.classList.toggle('on', t.dataset.view === saved);
+  t.onclick = () => {
+    document.body.dataset.view = t.dataset.view;
+    localStorage.setItem('lockdown-view', t.dataset.view);
+    document.querySelectorAll('.tab').forEach(x => x.classList.toggle('on', x === t));
+  };
+});
 async function tick(){
   try{
     const r = await fetch('/api/state'); const s = await r.json();
@@ -113,7 +146,6 @@ async function tick(){
       document.getElementById('phone-state').innerHTML='<span class="pill warn">no signal</span>';
       document.getElementById('phone-m').innerHTML='<span style="color:var(--dim)">— m</span>';
     }
-    document.getElementById('phone-ts').innerHTML= s.phone.tailscale ? '<span class="pill ok">online</span>' : '<span class="pill bad">offline</span>';
     document.getElementById('f-fp').innerHTML= s.fingerprint.available?'<span class="pill ok">present</span>':'<span class="pill bad">absent</span>';
     document.getElementById('f-enrolled').textContent=(s.fingerprint.enrolled||[]).join(', ')||'none';
     document.getElementById('pol').innerHTML= s.policy.satisfied?'<span class="pill ok">yes</span>':'<span class="pill bad">no</span>';
@@ -137,7 +169,7 @@ class DemoState:
         self.prox = ProximityEngine(near_m=2.5, far_m=6.0)
         self.lock = threading.Lock()
         self.face = {"detected": False, "distance": None, "threshold": self.cfg.verify.threshold}
-        self.phone = {"meters": None, "rssi": None, "near": False, "tailscale": False}
+        self.phone = {"meters": None, "rssi": None, "near": False}
         self._started = False
         # One shared capture handle: opening the device per frame both fails
         # (the device allows a single opener) and costs ~940 ms each time.
@@ -145,6 +177,7 @@ class DemoState:
         self._cap = None
         self._cap_lock = threading.RLock()
         self._latest_jpeg: bytes | None = None
+        self._last_face: tuple[int, int, int, int] | None = None
         self.last_error: str | None = None
 
     def _camera(self):
@@ -158,9 +191,15 @@ class DemoState:
                 )
             return self._cap
 
-    def read_frame(self):
+    def read_frame(self, drain: bool = True):
         with self._cap_lock:
             cap = self._camera()
+            if drain:
+                # A read after an idle period returns in <1 ms, i.e. it serves a
+                # frame queued by the driver possibly seconds ago. One grab
+                # discards the pending slot so the following read blocks for a
+                # fresh capture (~50 ms on this sensor) instead of replaying.
+                cap.grab()
             ok, frame = cap.read()
             if not ok or frame is None:
                 raise RuntimeError("camera returned no frame")
@@ -170,57 +209,92 @@ class DemoState:
         if self._started:
             return
         self._started = True
-        threading.Thread(target=self._face_loop, daemon=True).start()
+        threading.Thread(target=self._capture_loop, daemon=True).start()
         threading.Thread(target=self._phone_loop, daemon=True).start()
 
-    def _face_loop(self):
+    def _capture_loop(self):
+        """Capture and encode continuously; detect on a slower cadence.
+
+        The sensor delivers ~20 fps. Detection costs ~8 ms on a 320-wide copy
+        and the LBPH match is sub-millisecond, so running them on every frame
+        would still fit -- but they are kept on their own cadence so the
+        preview never waits behind a slow detection.
+        """
+        detect_w = 320
+        last_detect = 0.0
         while True:
             try:
                 frame = self.read_frame()
-                face = camera.largest_face(frame)
+                now = time.time()
+                with self.lock:
+                    face = self._last_face
                 if face is not None:
-                    x, y, w, h = face.box
-                    cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 255, 0), 2)
-                ok, buf = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 72])
+                    h, w = frame.shape[:2]
+                    scale = detect_w / float(w) if w > detect_w else 1.0
+                    inv = 1.0 / scale
+                    x, y, fw, fh = face
+                    cv2.rectangle(
+                        frame,
+                        (int(x * inv), int(y * inv)),
+                        (int((x + fw) * inv), int((y + fh) * inv)),
+                        (0, 255, 0),
+                        2,
+                    )
+                ok, buf = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 70])
                 if ok:
                     self._latest_jpeg = buf.tobytes()
-                if face is None:
-                    with self.lock:
-                        self.face = {
-                            "detected": False,
-                            "distance": None,
-                            "threshold": self.cfg.verify.threshold,
-                        }
-                elif self.model_loaded:
-                    result = self.rec.predict(face.gray)
-                    with self.lock:
-                        self.face = {
-                            "detected": True,
-                            "distance": result.distance,
-                            "threshold": result.threshold,
-                        }
-                else:
-                    with self.lock:
-                        self.face = {
-                            "detected": True,
-                            "distance": None,
-                            "threshold": self.cfg.verify.threshold,
-                        }
+
+                if now - last_detect >= 0.15:  # ~6.5 detection passes per second
+                    last_detect = now
+                    self._detect_once(frame, detect_w)
             except Exception as exc:
                 self.last_error = f"{type(exc).__name__}: {exc}"
-            time.sleep(1.2)
+
+    def _detect_once(self, frame, detect_w: int):
+        h, w = frame.shape[:2]
+        scale = detect_w / float(w) if w > detect_w else 1.0
+        small = (
+            cv2.resize(frame, (detect_w, int(h * scale)), interpolation=cv2.INTER_AREA)
+            if scale < 1.0
+            else frame
+        )
+        face = camera.largest_face(small)
+        if face is None:
+            with self.lock:
+                self._last_face = None
+                self.face = {
+                    "detected": False,
+                    "distance": None,
+                    "threshold": self.cfg.verify.threshold,
+                }
+            return
+        with self.lock:
+            self._last_face = face.box
+        if not self.model_loaded:
+            with self.lock:
+                self.face = {
+                    "detected": True,
+                    "distance": None,
+                    "threshold": self.cfg.verify.threshold,
+                }
+            return
+        result = self.rec.predict(face.gray)
+        with self.lock:
+            self.face = {
+                "detected": True,
+                "distance": result.distance,
+                "threshold": result.threshold,
+            }
 
     def _phone_loop(self):
         while True:
             try:
                 reading = self.prox.poll()
-                online = tailscale_online("100.x.y.z")
                 with self.lock:
                     self.phone = {
                         "meters": reading.meters if reading else None,
                         "rssi": reading.rssi if reading else None,
                         "near": bool(reading and self.prox.near),
-                        "tailscale": online,
                     }
             except Exception:
                 pass
@@ -310,7 +384,10 @@ def create_app() -> FastAPI:
                         b"Content-Length: " + str(len(jpeg)).encode() + b"\r\n\r\n"
                         + jpeg + b"\r\n"
                     )
-                time.sleep(0.25)
+                # Poll the shared buffer frequently. The camera paces the
+                # producer at ~20 fps, so a long sleep here is what made the
+                # preview look a quarter of its real rate.
+                time.sleep(0.02)
 
         return StreamingResponse(gen(), media_type="multipart/x-mixed-replace; boundary=frame")
 

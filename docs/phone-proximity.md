@@ -10,10 +10,32 @@ Verified on this machine 2026-11-10 with an iPhone 17 Pro Max:
 |---|---|---|
 | BLE advertising RSSI | **yes** — Apple manufacturer data (`0x004c`), ~-45 dBm on a desk | yes, coarsely |
 | BLE address | rotates every ~15 min | — |
-| Classic Bluetooth RSSI | only when connected | no |
-| Tailscale ping | yes, 30 ms direct | **no** — proves online, not near |
+| Classic Bluetooth RSSI | only while connected | no |
+| Tailscale ping | yes, 30 ms direct | **no — useless here** |
 
-Two consequences shape the design.
+Tailscale is deliberately **not** used. It answers "is this phone on the
+internet", which tells you nothing about whether it is on the desk. A phone
+left at home on wifi still pings. It was in an early version of the demo and
+was removed for being noise.
+
+## Can we hold a steady connection instead of scanning?
+
+Tested, and no. Attempts on 2026-11-10:
+
+1. **Connect to the current advertiser** — `bluetoothctl connect` reports
+   "Connection successful", and three seconds later the device is
+   `Connected: no`. iOS drops any LE link that is not driven by an app, so the
+   connection cannot be held.
+2. **Classic Bluetooth RSSI** (`hcitool rssi`) — returns "Not connected", and an
+   iPhone does not stay connected to a laptop for this purpose.
+3. **Pin the address** — the address rotated mid-session from
+   `68:25:55:9B:40:91` to `4B:A8:49:42:02:72` and `57:BF:BC:96:78:09` within
+   the same hour. There is nothing stable to pin.
+
+So scanning advertisements is the only workable local signal. A stable
+per-phone identity would require an app on the phone advertising a fixed
+identifier, or the phone doing an active Wi-Fi RTT exchange — neither exists
+without writing an iOS app.
 
 ### The MAC address changes
 
