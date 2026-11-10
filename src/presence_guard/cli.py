@@ -152,6 +152,16 @@ def _cmd_serve(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_demo(args: argparse.Namespace) -> int:
+    import uvicorn
+
+    from .webapp import app
+
+    print(f"demo on http://{args.host}:{args.port}  (read-only: never locks)")
+    uvicorn.run(app, host=args.host, port=args.port, log_level="warning")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="presence-guard", description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
@@ -198,6 +208,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("serve", help="run the Tailscale-only remote endpoint")
     p.set_defaults(func=_cmd_serve)
+
+    p = sub.add_parser("demo", help="live read-only UI for face and phone factors")
+    p.add_argument("--host", default="127.0.0.1")
+    p.add_argument("--port", type=int, default=8790)
+    p.set_defaults(func=_cmd_demo)
 
     return parser
 
