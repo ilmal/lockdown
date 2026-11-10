@@ -32,6 +32,15 @@ Configured 2026-11-10 by `scripts/setup-hibernate.sh`:
 
 `vm.swappiness=1` keeps swap effectively unused except for hibernation.
 
+Until you reboot, `presence-guard hibernate` refuses and says so:
+
+```console
+$ presence-guard hibernate
+hibernation is not usable on this machine:
+  - resume= is configured but this boot started before it took effect;
+    reboot once, then hibernation will work
+```
+
 ## This machine is dracut, not initramfs-tools
 
 Ubuntu 26.04 boots a **dracut** initrd with `systemd-initrd`. Most hibernation
