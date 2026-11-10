@@ -58,3 +58,44 @@ adds irreversible risk for no extra protection against the realistic threat.
 - Never logged: `log_message` prints the request line only, and the bearer token
   lives in a header.
 - Server binds to one Tailscale address, not `0.0.0.0`.
+
+## Face recognition: YuNet + SFace, not LBPH
+
+LBPH (the original implementation) is a 2004-era local-binary-pattern histogram.
+Measured on this laptop: genuine scores ranged 62-83 on its distance scale with
+the threshold at 62, so most checks said "impostor" for the right person.
+
+Replaced with the pairing OpenCV ships for face recognition:
+
+| | LBPH | YuNet + SFace |
+|---|---|---|
+| Detector | Haar cascade | YuNet (CNN) |
+| Matcher | texture histogram | 128-D embedding, cosine |
+| You | 62-83 (threshold 62) | **0.43-0.93** (threshold 0.40) |
+| Stranger photo | — | **0.045** |
+| Model size | 930 KB | 37 MB |
+| Licence | BSD (OpenCV) | Apache-2.0 (OpenCV Zoo) |
+
+### Alignment is the part that mattered
+
+SFace expects landmark-aligned input. Feeding it a plain bounding-box crop made
+a photo of a total stranger score **0.472 — i.e. a match**. Using YuNet's five
+landmarks with `alignCrop` dropped the same photo to **0.045**.
+
+Never compare embeddings from differently-cropped inputs: enrollment and
+matching must both go through `alignCrop`.
+
+### Why not dlib / face_recognition / insightface
+
+- `face_recognition` (dlib) needs a 100 MB model plus a C++ build; accuracy is
+  comparable to SFace and it is unmaintained.
+- `insightface` (ArcFace) is the strongest open option and is what most
+  production systems use, but it wants ONNX Runtime + ~300 MB of models and
+  pulls a heavier dependency chain. Worth it if accuracy ever becomes the
+  limiting factor; SFace's margin here is already wide.
+- Commercial SDKs (Apple Vision, Luxand, Neurotechnology) are not needed for a
+  "is the enrolled person at the desk" check.
+
+The market standard for *liveness* (rejecting photos) is a different problem:
+it needs depth, IR, or a trained anti-spoof model. This project does none of
+that; see threat-model.md.
