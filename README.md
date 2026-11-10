@@ -1,220 +1,197 @@
-# presence-guard
+# Lockdown
 
-Continuous face-presence verification for a laptop, plus a phone-activated
-kill switch.
+A laptop that checks it's still *you* sitting in front of it — and a button on
+your phone that can power it off from anywhere.
 
-Two independent parts:
+<p align="center">
+  <img alt="license" src="https://img.shields.io/badge/license-MIT-black">
+  <img alt="python" src="https://img.shields.io/badge/python-3.11%2B-blue">
+  <img alt="platform" src="https://img.shields.io/badge/platform-linux-lightgrey">
+  <img alt="deps" src="https://img.shields.io/badge/cloud-none-brightgreen">
+</p>
 
-1. **Local presence guard** — every few minutes, capture a frame from the
-   laptop's camera, check that a known face is in front of it. If nobody is
-   there for long enough, lock the screen. If somebody *else* is there, lock
-   immediately and alert.
-2. **Remote kill switch** — a token-authenticated HTTP endpoint reachable only
-   over your Tailscale tailnet. From your phone you can lock the session, or
-   power the machine off so the LUKS master key is no longer in RAM.
+Everything runs locally: no cloud, no model downloads, no telemetry, no account.
 
-Everything runs locally. No cloud, no model downloads, no telemetry.
+---
 
-## Read this before enabling the kill switch
+## What it does
 
-The disk is *already* encrypted (LUKS2). There is no "remote encrypt" to
-perform. The realistic attack after a laptop is stolen is:
-
-| Laptop was… | What protects you |
+| | |
 |---|---|
-| powered off / shut down | LUKS passphrase. Already fine. |
-| suspended (lid closed) | **Nothing.** RAM stays powered, the LUKS key sits in it. A cold-boot or DMA attack recovers it. |
-| on and unlocked | **Nothing.** Attacker is already root. |
+| 👁 **Presence check** | Every few minutes the camera looks for your face. Nobody there for too long → screen locks. |
+| 🚫 **Impostor check** | Somebody *else* at the keyboard → locks on the second consecutive bad match. |
+| 📱 **Remote lock** | Lock the machine from your phone over Tailscale. |
+| ⚡ **Remote panic** | Lock, then power off — destroying the disk-encryption key held in RAM. |
+| 😴 **Hibernate** | Power off while keeping every tab and terminal. |
+| 🔌 **Fails safe** | Broken camera logs an error and keeps running; it never locks you out because hardware glitched. |
 
-So the single most valuable remote action is **poweroff**: it destroys RAM
-contents and therefore the in-memory LUKS key. Next boot asks for the
-passphrase again, exactly as you want.
+## The one idea worth understanding
 
-`panic` does that safely and reversibly. A true "make the disk unreadable"
-action would mean wiping LUKS keyslots, which is **irreversible** — this repo
-deliberately ships no such endpoint and no config for one. See
-`docs/threat-model.md` for why, and for the header-backup step to take before
-anyone ever writes one.
+Your disk is almost certainly **already encrypted**. The question after a theft
+isn't "is the disk encrypted" — it's **"is the key still in RAM?"**
 
-## Safety defaults
+| Laptop was… | Can a thief read your data? | Lockdown's answer |
+|---|---|---|
+| Powered off | No — needs your passphrase | ✅ already safe |
+| **Suspended** (lid shut) | **Yes** — key sits in RAM | ⚡ `panic` powers it off |
+| Running and unlocked | Yes — they're already root | 📱 `lock` first |
 
-- No endpoint deletes keys, edits `/etc/crypttab`, or touches `/etc/fstab`. The
-  worst thing a misaimed request can do is power the laptop off.
-- `panic` requires an explicit confirmation body, not just a POST.
-- Every CLI action that touches the session accepts `--dry-run` and prints the
-  exact command it would run.
-- The remote server refuses to start without a token file and binds to one
-  Tailscale address, never `0.0.0.0`.
+So the most valuable thing a phone button can do is **power off**, not
+"encrypt". That single insight is why this project has no destructive
+"wipe the keys" endpoint — see [`docs/threat-model.md`](docs/threat-model.md).
 
-## Install
+---
 
-```bash
-cd ~/programing/presence-guard
-python3 -m venv .venv
-.venv/bin/pip install -e .
-```
-
-Install the CLI on your PATH (optional):
+## Quick start
 
 ```bash
-.venv/bin/pip install --user -e .
+python3 -m venv .venv && .venv/bin/pip install -e .
+.venv/bin/presence-guard devices      # find your camera
+.venv/bin/presence-guard enroll       # look at the laptop for a few seconds
+.venv/bin/presence-guard check        # did it recognise you?
+.venv/bin/presence-guard watch --dry-run   # watch it decide, without locking
 ```
 
-## Enroll your face
+When the dry run looks right, drop `--dry-run`.
 
-Enrollment is a one-time, interactive step. It writes only to
-`~/.local/share/presence-guard/`, never into this repo.
+## Use it
 
-```bash
-presence-guard enroll --samples 25
+```console
+$ presence-guard check
+match: distance=41.2 threshold=62.0 face_area=34225
+
+$ presence-guard watch
+2026-11-10T09:14:02Z guard started: device=/dev/video0 interval=300s
+2026-11-10T09:19:04Z present: distance 44.8 <= 62.0
+2026-11-10T09:24:06Z absent: absent 0.4 min
+2026-11-10T09:29:08Z LOCKED: nobody at the desk for 5.2 min (grace 5 min)
 ```
 
-Sit in front of the laptop, look at it normally. It will capture frames from
-the IR camera, detect your face, and save normalised crops.
+```console
+# from your phone, on the tailnet
+$ curl -H "Authorization: Bearer $TOKEN" http://<your-tailnet-ip>:8791/status
+{"locked": false, "session": "2", "last_guard_event": null}
 
-Then check that verification recognises you:
-
-```bash
-presence-guard check --verbose
+$ curl -X POST -H "Authorization: Bearer $TOKEN" http://<your-tailnet-ip>:8791/panic \
+       -H 'Content-Type: application/json' -d '{"confirm":"panic"}'
+{"action": "panic", "lock": "locked session 2", "poweroff": "requested"}
 ```
 
-## Run the guard
+Add it to your phone with an iOS Shortcut or an Android widget —
+[`docs/phone-setup.md`](docs/phone-setup.md).
 
-```bash
-presence-guard watch --dry-run      # observe only, never locks
-presence-guard watch                # for real
+---
+
+## Features in detail
+
+<details>
+<summary><b>Face verification</b> — what it actually checks</summary>
+
+```
+camera frame → largest face → 100×100 greyscale crop → LBPH distance → threshold
 ```
 
-Install as a user service (runs while you are logged in):
+Lower distance = closer match. `presence-guard calibrate` prints real distances
+so you can tune the threshold instead of guessing:
 
-```bash
-mkdir -p ~/.config/systemd/user
-cp systemd/presence-guard.service systemd/presence-guard-remote.service ~/.config/systemd/user/
-systemctl --user daemon-reload
-systemctl --user enable --now presence-guard.service presence-guard-remote.service
+```console
+$ presence-guard calibrate
+  0: distance=38.4
+  1: distance=41.0
+  2: distance=39.7
+min=37.1 median=40.2 max=48.9
 ```
 
-## Remote control from your phone
+It needs ~25 samples and runs in milliseconds on a CPU.
+</details>
 
-The remote server binds **only** to your Tailscale address, so it is not
-reachable from any network you are not already on. Generate a token first:
+<details>
+<summary><b>Remote endpoints</b> — three actions, nothing destructive</summary>
 
-```bash
-mkdir -p ~/.claude/secrets
-head -c 32 /dev/urandom | base64 > ~/.claude/secrets/presence-guard-token
-chmod 600 ~/.claude/secrets/presence-guard-token
+| Method | Path | Does |
+|---|---|---|
+| `GET` | `/status` | Locked state, session id, last guard event |
+| `POST` | `/lock` | Locks the session |
+| `POST` | `/panic` | Locks, then powers off (needs `{"confirm":"panic"}`) |
+| `POST` | `/hibernate` | Locks, then hibernates (needs `{"confirm":"hibernate"}`) |
+
+Bearer token, compared in constant time, never logged. Binds to a single
+Tailscale address — never `0.0.0.0`.
+</details>
+
+<details>
+<summary><b>Hibernation</b> — power off without losing your session</summary>
+
+RAM goes to swap, the machine powers off completely, and everything returns on
+boot. Because swap lives *inside* the encrypted volume, the saved session is
+encrypted too and still needs your passphrase.
+
+```console
+$ presence-guard hibernate --dry-run
+hibernation is not usable on this machine:
+  - swap is 8.0 GiB but RAM is 61.2 GiB
+  - no resume device is configured
 ```
 
-Then from your phone (Tailscale connected):
+It refuses with the reasons rather than suspending and hanging.
+`scripts/setup-hibernate.sh` does the setup and leaves a rollback script.
+See [`docs/hibernate.md`](docs/hibernate.md).
+</details>
 
-```bash
-TOKEN=$(cat ~/.claude/secrets/presence-guard-token)
+<details>
+<summary><b>Secret guard</b> — this repo is public, so pushes are checked</summary>
 
-curl -H "Authorization: Bearer $TOKEN" http://100.x.y.z:8791/status
-curl -X POST -H "Authorization: Bearer $TOKEN" http://100.x.y.z:8791/lock
+Three layers:
+
+1. `scripts/check-secrets.sh` — private keys, cloud/API tokens, JWTs, tailnet
+   IPs, personal paths, `password = "…"`.
+2. `.githooks/pre-commit` — runs it on every commit.
+3. `scripts/push.sh` — refuses to push unscanned changes.
+
+```console
+$ ./scripts/check-secrets.sh
+  x leak.txt: matches /(password|passwd)[[:space:]]*[=:][[:space:]]*["']…/
+Refusing to continue: the content above looks like a secret.
 ```
 
-`panic` — lock, then power off:
+Pattern lists are a net, not a guarantee — the rule is still *no credentials in
+this tree*.
+</details>
 
-```bash
-curl -X POST -H "Authorization: Bearer $TOKEN" \
-     -H 'Content-Type: application/json' \
-     -d '{"confirm":"panic"}' \
-     http://100.x.y.z:8791/panic
-```
+---
 
-Bookmark that on the phone, or see `docs/phone-setup.md` for an iOS Shortcut.
+## Design notes
 
-## Configuration
+**The IR camera lost.** This laptop has two sensors. I expected the IR one to
+win; measurement said otherwise:
 
-Config lives at `~/.config/presence-guard/config.toml` (see
-`config.example.toml`). Nothing in this repo is machine-specific.
+| Sensor | Frames with a face detected |
+|---|---|
+| RGB `/dev/video0` @640×480 | **10 / 10** |
+| IR `/dev/video2` @640×360 | **3 / 10** |
+
+Haar cascades are trained on visible-light faces, and an IR face is flat and
+low-contrast. So RGB is the default. More in
+[`docs/design-notes.md`](docs/design-notes.md).
+
+**Honest limitations.** LBPH is a personal-project matcher, not a liveness
+detector — it answers "is the enrolled person at the desk", not "is this a live
+human". A printed photo may well pass. Its real value is that an unattended,
+unlocked laptop locks itself.
+
+## Docs
+
+| | |
+|---|---|
+| [threat-model.md](docs/threat-model.md) | What each action does and doesn't protect |
+| [remote-kill.md](docs/remote-kill.md) | Endpoint, token, polkit rule for poweroff |
+| [phone-setup.md](docs/phone-setup.md) | iOS Shortcut / Android widget |
+| [hibernate.md](docs/hibernate.md) | Session-preserving poweroff, and its traps |
+| [design-notes.md](docs/design-notes.md) | Why these choices, measured not assumed |
 
 ## Requirements
 
-- Linux with a UVC camera
-- Python 3.11+
-- OpenCV contrib (`opencv-contrib-python-headless`, installed by `pip install -e .`)
-- For the remote part: Tailscale reachable from your phone
-- For poweroff without a password prompt: a polkit rule or a narrow sudoers
-  entry — see `docs/remote-kill.md`
-
-## Keeping your session while killing the disk key
-
-Poweroff destroys the in-RAM LUKS key but loses your tabs. Hibernation gives
-you both — RAM is written to swap, the machine powers fully off, and everything
-comes back on boot. Because swap here is inside the encrypted volume, the saved
-image is protected by LUKS too.
-
-```bash
-presence-guard hibernate --dry-run
-```
-
-This refuses rather than hangs when the machine is not set up for it — see
-`docs/hibernate.md` for the requirements and the setup, and read the warning
-about a failed first attempt before enabling it.
-
-## Repository hygiene
-
-This repo is public, so three guards are built in:
-
-- **`scripts/check-secrets.sh`** — scans files for private keys, cloud/API
-  tokens, JWT-shaped strings, tailnet addresses, personal home paths and
-  `password = "…"` assignments. It refuses to pass if any match.
-- **`.githooks/pre-commit`** — runs that scan on every commit. Enable it once per
-  clone with `./scripts/install-hooks.sh`.
-- **`scripts/push.sh`** — refuses to push a dirty tree and re-runs nothing that
-  has not already been scanned; used by the autopush cron.
-
-The scan is a safety net, not a licence: a pattern list cannot recognise every
-secret. The rule is still that no credential belongs in this tree.
-
-### Autopush (this machine)
-
-`crontab` runs every 15 minutes:
-
-```
-*/15 * * * * cd $HOME/programing/presence-guard && ./scripts/push.sh --commit >> $HOME/.local/share/lockdown-push.log 2>&1
-```
-
-`--commit` commits any dirty tree with a timestamp message, so unattended edits
-and Claude sessions end up in `github.com/ilmal/lockdown` on their own. If the
-secret scan fails, the commit does not happen and the reason lands in
-`~/.local/share/lockdown-push.log` — check that file first if a change never
-appears on GitHub.
-
-Local state lives in `~/.config/presence-guard/` and
-`~/.local/share/presence-guard/`, both outside the repository and both
-gitignored.
-
-## The IR camera: measured, not assumed
-
-This laptop (Dell Precision 5570) has **two** UVC sensors. `/dev/video0` is RGB
-(up to 1280x720, MJPEG/YUYV). `/dev/video2` is a second sensor that exposes only
-8-bit greyscale at 640x360 — the Windows Hello IR camera.
-
-I expected IR to be the better choice. Measured on this machine, it is not:
-
-| Sensor | Frames with a detected face |
-|---|---|
-| `/dev/video0` RGB @640x480 | **10 / 10** |
-| `/dev/video2` IR @640x360 | **3 / 10** |
-
-The Haar detector shipped here is trained on visible-light faces, and an IR face
-is a flat, dark, low-contrast version of one. The default configuration
-therefore uses **RGB**. IR remains genuinely better in the dark and is harder to
-spoof with a phone screen — if you want it, expect to swap in a detector trained
-on IR, which is real work, not a config flag.
-
-## Limitations, stated honestly
-
-- LBPH face matching is a personal-project-grade matcher. It is not a
-  security boundary against a determined attacker who already has physical
-  access; it is a check that *the person at the desk is still you*.
-- IR defeats a phone screen and a printed photo far better than RGB does, but
-  it is not a certified liveness detector.
-- If the laptop is offline or powered off, the remote endpoint cannot reach it.
-  The local presence guard is the backstop for that case.
+Linux · Python 3.11+ · any UVC camera · Tailscale for the phone part.
 
 ## License
 
