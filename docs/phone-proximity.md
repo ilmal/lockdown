@@ -149,3 +149,50 @@ With no hotspot, no beacon, and no iOS app, **Bluetooth cannot identify your
 phone** — only "some Apple device is at this distance". If that is not good
 enough, the remaining options are an app (iOS peripheral advertising a fixed
 UUID; needs Xcode, and there is no macOS in this fleet) or a beacon (rejected).
+
+## You do NOT need to build your own app
+
+Earlier versions of this document said an app was required. That was wrong: the
+right way is not a custom app that advertises a raw service UUID — it is an
+**existing beacon-broadcaster app** turning the iPhone into an iBeacon.
+
+The key difference is which API does the advertising:
+
+| Route | Survives backgrounding? | Stable identity? |
+|---|---|---|
+| Generic `CBPeripheralManager.startAdvertising(serviceUUIDs:)` | **No** — iOS strips the payload to a nameless overflow packet that wildcard scanners cannot see, and never restores it after termination | no |
+| **iBeacon via `CLBeaconRegion.peripheralData(withMeasuredPower:)`** | Much better — iBeacon frames are a system-recognised format, and apps can be relaunched by CoreLocation region monitoring | **yes**, the UUID is fixed |
+
+### What to install
+
+Any of these can make an iPhone transmit a configurable iBeacon UUID:
+
+- **Locate Beacon** (App Store, Radius Networks) — has a "Transmit" mode with
+  configurable UUID/major/minor.
+- **nRF Connect** (Nordic Semiconductor) — has a "Beacon / iBeacon" advertiser.
+- **Beacon Simulator** and similar — same idea.
+
+Set a UUID you generate yourself, keep the app running, and point the config at
+that UUID:
+
+```toml
+[phone]
+mode = "ibeacon"
+hotspot_ssid = "your-uuid-here"
+```
+
+The laptop then scans for `02 15 <uuid>` inside Apple manufacturer data, which is
+what `scan_ibeacon()` implements. The MAC keeps rotating; the UUID does not, so
+identity is stable.
+
+### Honest limits
+
+- **The app must be running and the phone awake.** iOS does suspend third-party
+  apps eventually, and after a force-quit nothing advertises. CoreLocation region
+  monitoring can relaunch the app for a short window, but this is not a
+  guaranteed-forever background service.
+- **Battery:** far cheaper than a Personal Hotspot, but non-zero.
+- Treat it as "phone present" for a demo, not as a cryptographic authenticator.
+  Anyone who learns the UUID can spoof the advertisement; iBeacon has no
+  challenge-response. The policy requiring two of three factors is what makes
+  that acceptable.

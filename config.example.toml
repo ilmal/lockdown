@@ -36,8 +36,12 @@ port = 8791
 token_file = "~/.claude/secrets/presence-guard-token"
 
 [phone]
-# "hotspot" identifies YOUR phone by its Personal Hotspot SSID — stable, no app,
-# no beacon. "ble" degrades to "any Apple device is near".
-mode = "hotspot"
-# The exact SSID from Settings > Personal Hotspot on the iPhone.
-hotspot_ssid = "Nils-iPhone"
+# How the phone is identified.
+#   "ibeacon"  — stable UUID from a beacon-broadcasting app on the phone.
+#                No hardware beacon, no hotspot. Needs an App Store app
+#                (Locate Beacon / nRF Connect) running with the screen on.
+#   "hotspot"  — Personal Hotspot SSID. Stable and app-free, but battery-heavy.
+#   "ble"      — any Apple BLE advertiser nearby. No identity, just distance.
+mode = "ibeacon"
+# For "ibeacon": the UUID the phone broadcasts. For "hotspot": the SSID.
+hotspot_ssid = "e2c56db5-dffb-48d2-b060-d0f5a71096e0"

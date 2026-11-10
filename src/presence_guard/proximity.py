@@ -111,7 +111,33 @@ class ProximityEngine:
     def poll(self) -> Reading | None:
         if self.mode == "hotspot":
             return self._poll_hotspot()
+        if self.mode == "ibeacon":
+            return self._poll_ibeacon()
         return self._poll_ble()
+
+    def _poll_ibeacon(self) -> Reading | None:
+        if not self.hotspot_ssid:
+            self.last_error = "phone.hotspot_ssid is not set to a beacon UUID"
+            return None
+        reading = scan_ibeacon(self.hotspot_ssid)
+        if reading is None:
+            self.last_error = (
+                f"iBeacon {self.hotspot_ssid} not visible (is the beacon app running?)"
+            )
+            self.near = False
+            self.samples.clear()
+            return None
+        self.samples.append(reading.meters)
+        meters = statistics.median(self.samples)
+        if meters <= self.near_m:
+            self.near = True
+        elif meters >= self.far_m:
+            self.near = False
+        self.last_error = None
+        self.last_reading = Reading(
+            rssi=reading.rssi, meters=meters, samples=len(self.samples)
+        )
+        return self.last_reading
 
     def _poll_hotspot(self) -> Reading | None:
         if not self.hotspot_ssid:
@@ -228,4 +254,109 @@ def scan_hotspot(ssid: str) -> WifiReading | None:
         )
         if best is None or reading.signal > best.signal:
             best = reading
+    return best
+
+
+# --------------------------------------------------------------------------
+# iBeacon proximity: identify the phone by a UUID that a broadcasting app sets.
+#
+# This is the only Bluetooth route that gives STABLE identity from the phone
+# itself. An iBeacon payload embeds a fixed 16-byte UUID, so it does not matter
+# that the MAC rotates: the UUID is the identity.
+#
+# Requires an app on the phone that transmits as an iBeacon (Locate Beacon,
+# nRF Connect, Beacon Simulator). iOS suspends advertising when the app is
+# backgrounded for long, so the phone must be awake with the app running.
+# --------------------------------------------------------------------------
+
+
+@dataclass
+class IBeaconReading:
+    uuid: str
+    major: int
+    minor: int
+    rssi: float
+    meters: float
+    at: float = field(default_factory=time.time)
+
+
+def _uuid_from_bytes(raw: bytes) -> str:
+    h = raw.hex()
+    return f"{h[0:8]}-{h[8:12]}-{h[12:16]}-{h[16:20]}-{h[20:32]}"
+
+
+def scan_ibeacon(uuid: str, seconds: float = 6.0) -> IBeaconReading | None:
+    """Scan for an iBeacon advertising a specific UUID.
+
+    iBeacon rides in Apple manufacturer data (0x004c) as type 0x02:
+    `4c 00 02 15 <16-byte uuid> <major:2> <minor:2> <txpower:1>`.
+    """
+    target = uuid.replace("-", "").lower()
+    proc = subprocess.Popen(
+        ["bluetoothctl", "--timeout", str(int(seconds) + 1), "scan", "on"],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+    )
+    best: IBeaconReading | None = None
+    cur_rssi = -99.0
+    buf: list[str] = []
+    collecting = False
+
+    def flush(buf: list[str], rssi: float) -> "IBeaconReading | None":
+        hexstr = "".join(buf).replace(" ", "")
+        try:
+            raw = bytes.fromhex(hexstr)
+        except ValueError:
+            return None
+        # iBeacon frame: 02 15 <16-byte UUID> <major:2> <minor:2> <tx power:1>
+        idx = raw.find(b"\x02\x15")
+        if idx < 0 or len(raw) < idx + 18:
+            return None
+        if raw[idx + 2 : idx + 18].hex() != target:
+            return None
+        major = int.from_bytes(raw[idx + 18 : idx + 20], "big")
+        minor = int.from_bytes(raw[idx + 20 : idx + 22], "big")
+        return IBeaconReading(
+            uuid=uuid, major=major, minor=minor, rssi=rssi, meters=rssi_to_meters(rssi)
+        )
+
+    def consider(reading: "IBeaconReading | None") -> None:
+        nonlocal best
+        if reading is not None and (best is None or reading.rssi > best.rssi):
+            best = reading
+
+    deadline = time.monotonic() + seconds
+    try:
+        while time.monotonic() < deadline:
+            line = proc.stdout.readline() if proc.stdout else ""
+            if not line:
+                break
+            m = _RSSI_LINE.search(line)
+            if m:
+                if collecting and buf:
+                    consider(flush(buf, cur_rssi))
+                buf, collecting = [], False
+                cur_rssi = float(m.group(2))
+                continue
+            if "ManufacturerData.Value" in line:
+                if collecting and buf:
+                    consider(flush(buf, cur_rssi))
+                collecting, buf = True, []
+                continue
+            if collecting:
+                if re.match(r"^\s+[0-9a-f]{2} ", line):
+                    buf.append(line.replace("..", " ").strip())
+                else:
+                    # Payload finished; anything else on the line is not data.
+                    consider(flush(buf, cur_rssi))
+                    buf, collecting = [], False
+        if collecting and buf:
+            consider(flush(buf, cur_rssi))
+    finally:
+        try:
+            proc.terminate()
+            proc.wait(timeout=3)
+        except Exception:
+            proc.kill()
     return best

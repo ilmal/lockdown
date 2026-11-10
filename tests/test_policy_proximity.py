@@ -95,3 +95,44 @@ def test_hysteresis_prevents_flapping(monkeypatch):
     )
     engine.poll()
     assert engine.near is False, "past far_m must drop the state"
+
+
+def test_ibeacon_frame_is_parsed(monkeypatch):
+    """iBeacon rides in Apple data as 4c00 0215 <uuid> <major> <minor> <tx>."""
+    from presence_guard import proximity
+
+    uuid = "e2c56db5-dffb-48d2-b060-d0f5a71096e0"
+    raw = bytes.fromhex("4c000215" + uuid.replace("-", "") + "00010002c5")
+
+    class FakeProc:
+        def __init__(self):
+            self._lines = [
+                "[CHG] Device AA:BB:CC:DD:EE:FF RSSI: 0xffffffc4 (-60)\n",
+                "[CHG] Device AA:BB:CC:DD:EE:FF ManufacturerData.Value:\n",
+                "  " + raw.hex(" ") + "\n",
+            ]
+
+        @property
+        def stdout(self):
+            return self
+
+        def readline(self):
+            return self._lines.pop(0) if self._lines else ""
+
+        def terminate(self):
+            pass
+
+        def wait(self, **_k):
+            return 0
+
+        def kill(self):
+            pass
+
+    monkeypatch.setattr(proximity.subprocess, "Popen", lambda *a, **k: FakeProc())
+    result = proximity.scan_ibeacon(uuid, seconds=1.0)
+
+    assert result is not None
+    assert result.uuid == uuid
+    assert result.major == 1
+    assert result.minor == 2
+    assert result.rssi == -60.0
