@@ -117,3 +117,35 @@ The least-work version is **not** ranging — it is a BLE peripheral that
 advertises one fixed service UUID, plus a laptop-side scan for that UUID. Ranging
 with `CLBeaconRegion` gives real metres but needs location permission and a
 background mode, and iOS throttles background ranging heavily.
+
+## Bluetooth only, no hotspot, no beacon: what is actually left
+
+Measured 2026-11-10 on this laptop with an iPhone 17 Pro Max. Every row is a test
+result, not a guess.
+
+| Approach | Result |
+|---|---|
+| Bond/pair the iPhone for a stable IRK | **Fails** — `bluetoothctl pair <mac>` → `org.bluez.Error.ConnectionAttemptFailed`. iOS will not bond with an unpaired Linux host. |
+| Hold a BLE connection | **Fails** — connect reports success, `Connected: no` within 3 s. iOS drops undriven LE links. |
+| Pin the BLE address | **Impossible** — rotates. Observed in one session: `68:25:55:9B:40:91` → `62:A7:27:E0:F4:43` → `48:9C:F8:CA:FA:E6` → `7B:F9:F9:65:5D:87`. |
+| Classic BT RSSI (`hcitool rssi`) | **Unavailable** — requires a connection, which iOS will not hold. |
+| Stable identity from the advertisement | **No** — the payloads are Continuity (`0x10` Nearby, `0x0c` Handoff, `0x01` AirDrop), all carrying rotating identifiers. |
+| mDNS / Bonjour hostname | **No** — no `.local` records from the phone on this network in a 20 s multicast sniff. |
+| **Signal strength of Apple advertisers (BLE RSSI)** | **Works** — this is all that is left. |
+
+### What the BLE fallback can and cannot do
+
+It measures **an Apple device's** distance, not your phone's identity. In a room
+with one iPhone that is a reasonable proxy; with several it is not proof of
+anything.
+
+That is acceptable only because phone is one of three secondary factors and the
+policy needs two. It is not acceptable as a sole factor, and it should never be
+described as "proximity to my phone".
+
+### The honest conclusion
+
+With no hotspot, no beacon, and no iOS app, **Bluetooth cannot identify your
+phone** — only "some Apple device is at this distance". If that is not good
+enough, the remaining options are an app (iOS peripheral advertising a fixed
+UUID; needs Xcode, and there is no macOS in this fleet) or a beacon (rejected).
