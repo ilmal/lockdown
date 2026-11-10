@@ -119,6 +119,19 @@ def _cmd_panic(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_hibernate(args: argparse.Namespace) -> int:
+    problems = session.hibernate_preflight()
+    if problems:
+        print("hibernation is not usable on this machine:", file=sys.stderr)
+        for problem in problems:
+            print(f"  - {problem}", file=sys.stderr)
+        print("see docs/hibernate.md", file=sys.stderr)
+        return 2
+    print(session.lock(dry_run=args.dry_run))
+    print(session.hibernate(dry_run=args.dry_run))
+    return 0
+
+
 def _cmd_serve(args: argparse.Namespace) -> int:
     remote.serve(config.load())
     return 0
@@ -157,6 +170,10 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("panic", help="lock, then power off")
     p.add_argument("--dry-run", action="store_true")
     p.set_defaults(func=_cmd_panic)
+
+    p = sub.add_parser("hibernate", help="lock, then hibernate (keeps your session)")
+    p.add_argument("--dry-run", action="store_true")
+    p.set_defaults(func=_cmd_hibernate)
 
     p = sub.add_parser("serve", help="run the Tailscale-only remote endpoint")
     p.set_defaults(func=_cmd_serve)

@@ -1,0 +1,3 @@
+#!/usr/bin/env bash
+# Pre-commit guard: never commit a secret to a public repo.
+exec "$(git rev-parse --show-toplevel)/scripts/check-secrets.sh"

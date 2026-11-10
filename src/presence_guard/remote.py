@@ -99,6 +99,24 @@ class Handler(BaseHTTPRequestHandler):
             threading.Timer(1.5, _poweroff_safely).start()
             return
 
+        if path == "/hibernate":
+            if self._body().get("confirm") != "hibernate":
+                self._send(400, {"error": 'confirmation required: {"confirm":"hibernate"}'})
+                return
+            problems = session.hibernate_preflight()
+            if problems:
+                self._send(409, {"error": "hibernation unavailable", "reasons": problems})
+                return
+            try:
+                lock_detail = session.lock()
+            except session.SessionError as exc:
+                self._send(500, {"error": str(exc)})
+                return
+            _routes_state["last"] = "remote hibernate"
+            self._send(200, {"action": "hibernate", "lock": lock_detail})
+            threading.Timer(1.5, _hibernate_safely).start()
+            return
+
         self._send(404, {"error": "not found"})
 
 
@@ -107,6 +125,13 @@ def _poweroff_safely() -> None:
         session.poweroff()
     except session.SessionError as exc:
         print(f"[remote] poweroff failed: {exc}", flush=True)
+
+
+def _hibernate_safely() -> None:
+    try:
+        session.hibernate()
+    except session.SessionError as exc:
+        print(f"[remote] hibernate failed: {exc}", flush=True)
 
 
 def serve(cfg: config.Config | None = None) -> None:
