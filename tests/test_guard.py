@@ -12,7 +12,7 @@ class FakeRec:
     def __init__(self, matches):
         self._matches = list(matches)
         self._i = 0
-        self.threshold = 62.0
+        self.threshold = 0.40
 
     def load(self):
         pass
@@ -22,9 +22,8 @@ class FakeRec:
         self._i += 1
         return recognizer.Result(
             matched=value,
-            distance=40.0 if value else 90.0,
+            similarity=0.80 if value else 0.10,
             threshold=self.threshold,
-            label=0,
         )
 
 
@@ -59,10 +58,10 @@ class _FakeCamera:
 
 
 def _patch_face(monkeypatch, present: bool):
-    fake_face = camera.Face((0, 0, 10, 10), np.zeros((100, 100), np.uint8)) if present else None
+    fake_face = ((0, 0, 10, 10), np.zeros((112, 112, 3), np.uint8)) if present else None
     monkeypatch.setattr(guard.camera, "open_camera", lambda *a, **k: _FakeCamera())
     monkeypatch.setattr(guard.camera, "grab_frame", lambda *a, **k: np.zeros((360, 640, 3), np.uint8))
-    monkeypatch.setattr(guard.camera, "largest_face", lambda *a, **k: fake_face)
+    monkeypatch.setattr(guard.recognizer, "largest_face", lambda *a, **k: fake_face)
 
 
 def test_match_keeps_guard_quiet(tmp_path, monkeypatch):
@@ -131,18 +130,18 @@ def test_burst_keeps_the_best_score(tmp_path, monkeypatch):
     g = _guard(tmp_path, monkeypatch, [True])
     g.cfg.verify.frames = 6
 
-    distances = iter([90.0, 95.0, 45.0, 88.0, 92.0, 50.0])
+    scores = iter([0.10, 0.05, 0.75, 0.12, 0.08, 0.60])
     seen = []
 
     def predict(_face):
-        d = next(distances)
+        d = next(scores)
         seen.append(d)
-        return recognizer.Result(matched=d <= 62.0, distance=d, threshold=62.0, label=0)
+        return recognizer.Result(matched=d >= 0.40, similarity=d, threshold=0.40)
 
     g.rec.predict = predict
 
     decision = g.evaluate_once()
 
     assert decision.state == "present"
-    assert decision.distance == 45.0
+    assert decision.similarity == 0.75
     assert len(seen) == 6

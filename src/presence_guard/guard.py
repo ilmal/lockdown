@@ -15,7 +15,7 @@ def log(message: str) -> None:
 @dataclass
 class Decision:
     state: str
-    distance: float | None
+    similarity: float | None
     action: str | None
     reason: str
 
@@ -35,7 +35,7 @@ class Guard:
         frame = camera.grab_frame(
             cfg.camera.device, cfg.camera.width, cfg.camera.height, cfg.camera.warmup_frames
         )
-        face = camera.largest_face(frame)
+        face = recognizer.largest_face(frame)
 
         if face is None:
             self.impostor_streak = 0
@@ -61,31 +61,31 @@ class Guard:
             self._episode_locked = False
             return Decision(
                 "present",
-                result.distance,
+                result.similarity,
                 None,
-                f"distance {result.distance:.1f} <= {result.threshold:.1f}",
+                f"similarity {result.similarity:.2f} >= {result.threshold:.2f}",
             )
 
         self.impostor_streak += 1
         if self._episode_locked:
             return Decision(
                 "impostor",
-                result.distance,
+                result.similarity,
                 None,
-                f"already locked for this episode; distance {result.distance:.1f}",
+                f"already locked for this episode; similarity {result.similarity:.2f}",
             )
         if self.impostor_streak >= cfg.verify.impostor_checks:
             return self._lock(
                 f"face did not match for {self.impostor_streak} consecutive checks "
-                f"(distance {result.distance:.1f} > {result.threshold:.1f})",
+                f"(similarity {result.similarity:.2f} < {result.threshold:.2f})",
                 "impostor",
-                result.distance,
+                result.similarity,
             )
         return Decision(
             "impostor?",
-            result.distance,
+            result.similarity,
             None,
-            f"distance {result.distance:.1f} > {result.threshold:.1f}, "
+            f"similarity {result.similarity:.2f} < {result.threshold:.2f}, "
             f"streak {self.impostor_streak}/{cfg.verify.impostor_checks}",
         )
 
@@ -94,8 +94,8 @@ class Guard:
 
         One frame is a lottery: motion blur and blinks push a genuine match
         well past the threshold. Measured on this machine, single-frame
-        distances for the same person spread 15.7 while the minimum of six
-        spreads 4.8.
+        LBPH distances for the same person spread 15.7 while the best of six
+        spread 4.8; the same burst logic still helps with SFace.
         """
         samples = max(1, self.cfg.verify.frames)
         cap = camera.open_camera(
@@ -111,33 +111,33 @@ class Guard:
                 ok, frame = cap.read()
                 if not ok or frame is None:
                     break
-                face = camera.largest_face(frame)
+                face = recognizer.largest_face(frame)
                 if face is None:
                     continue
                 taken += 1
-                result = self.rec.predict(face.gray)
-                if best is None or result.distance < best.distance:
+                result = self.rec.predict(face[1])
+                if best is None or result.similarity > best.similarity:
                     best = result
         finally:
             cap.release()
         if best is None:
             # No frame yielded a face; report an unmatched result rather than
-            # inventing a distance, so callers treat this as "not verified".
-            return recognizer.Result(matched=False, distance=float("inf"), threshold=self.rec.threshold, label=-1)
+            # inventing a score, so callers treat this as "not verified".
+            return recognizer.Result(matched=False, similarity=0.0, threshold=self.rec.threshold)
         return best
 
-    def _lock(self, reason: str, state: str, distance: float | None) -> Decision:
+    def _lock(self, reason: str, state: str, similarity: float | None) -> Decision:
         self._episode_locked = True
         if self.dry_run:
             log(f"DRY-RUN would lock: {reason}")
-            return Decision(state, distance, "would-lock", reason)
+            return Decision(state, similarity, "would-lock", reason)
         if self.cfg.guard.skip_when_locked and session.is_locked():
-            return Decision(state, distance, None, f"{reason}; already locked")
+            return Decision(state, similarity, None, f"{reason}; already locked")
         detail = session.lock()
         log(f"LOCKED: {reason} ({detail})")
         self.absent_since = None
         self.impostor_streak = 0
-        return Decision(state, distance, "locked", reason)
+        return Decision(state, similarity, "locked", reason)
 
     def watch(self) -> None:
         interval = self.cfg.guard.interval_seconds

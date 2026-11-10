@@ -29,10 +29,10 @@ def _cmd_probe(args: argparse.Namespace) -> int:
     frame = camera.grab_frame(
         cfg.camera.device, cfg.camera.width, cfg.camera.height, cfg.camera.warmup_frames
     )
-    faces = camera.detect_faces(frame)
+    faces = recognizer.detect(frame)
     print(f"device {cfg.camera.device}: frame {frame.shape}, {len(faces)} face(s)")
-    for face in faces:
-        print(f"  box={face.box} area={face.area}")
+    for box, _crop in faces:
+        print(f"  box={box} area={box[2] * box[3]}")
     if not faces:
         print("no face detected — check lighting, framing, and the chosen device")
         return 2
@@ -65,12 +65,12 @@ def _cmd_check(args: argparse.Namespace) -> int:
             ok, frame = cap.read()
             if not ok or frame is None:
                 break
-            face = camera.largest_face(frame)
+            face = recognizer.largest_face(frame)
             if face is None:
                 continue
             taken += 1
-            result = rec.predict(face.gray)
-            if best is None or result.distance < best.distance:
+            result = rec.predict(face[1])
+            if best is None or result.similarity > best.similarity:
                 best = result
     finally:
         cap.release()
@@ -78,8 +78,8 @@ def _cmd_check(args: argparse.Namespace) -> int:
         print("no face detected")
         return 2
     print(
-        f"{best.verdict}: distance={best.distance:.1f} threshold={best.threshold:.1f} "
-        f"frames={taken}"
+        f"{best.verdict}: similarity={best.similarity:.3f} "
+        f"threshold={best.threshold:.3f} frames={taken}"
     )
     return 0 if best.matched else 1
 
@@ -95,13 +95,13 @@ def _cmd_calibrate(args: argparse.Namespace) -> int:
             frame = camera.grab_frame(
                 cfg.camera.device, cfg.camera.width, cfg.camera.height, cfg.camera.warmup_frames
             )
-            face = camera.largest_face(frame)
+            face = recognizer.largest_face(frame)
             if face is None:
                 print(f"  {i:2d}: no face")
                 continue
-            result = rec.predict(face.gray)
-            values.append(result.distance)
-            print(f"  {i:2d}: distance={result.distance:.1f}")
+            result = rec.predict(face[1])
+            values.append(result.similarity)
+            print(f"  {i:2d}: similarity={result.similarity:.3f}")
         except Exception as exc:
             print(f"  {i:2d}: error {exc}")
     if not values:
@@ -109,9 +109,9 @@ def _cmd_calibrate(args: argparse.Namespace) -> int:
         return 1
     values.sort()
     print(
-        f"\nmin={values[0]:.1f} median={values[len(values) // 2]:.1f} max={values[-1]:.1f}"
+        f"\nmin={values[0]:.3f} median={values[len(values) // 2]:.3f} max={values[-1]:.3f}"
     )
-    print("set verify.threshold a little above your max for leniency, or near the median for strictness")
+    print("set verify.threshold below your min for leniency, above it for strictness")
     return 0
 
 
@@ -186,7 +186,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--frames", type=int, help="frames to sample (default from config)")
     p.set_defaults(func=_cmd_check)
 
-    p = sub.add_parser("calibrate", help="print match distances to tune the threshold")
+    p = sub.add_parser("calibrate", help="print similarity scores to tune the threshold")
     p.set_defaults(func=_cmd_calibrate)
 
     p = sub.add_parser("watch", help="run the presence guard loop")

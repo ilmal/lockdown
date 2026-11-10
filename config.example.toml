@@ -12,11 +12,11 @@ height = 480
 warmup_frames = 4
 
 [verify]
-# LBPH distance; lower is a closer match. Re-tune with `presence-guard calibrate`.
-# Measured on the reference laptop with frames=6: genuine matches 45-49.
-threshold = 62.0
-# Frames to sample per check; the best score wins. Single frames are noisy:
-# same-person spread measured 15.7 for one frame vs 4.8 for a burst of six.
+# SFace cosine similarity: HIGHER is a better match. The model's published
+# same-person cutoff is 0.363; measured genuine matches land at 0.53-0.66, so
+# 0.40 leaves margin without accepting strangers.
+threshold = 0.40
+# Frames to sample per check; the best score wins.
 frames = 6
 # Consecutive "wrong person" checks before locking.
 impostor_checks = 2

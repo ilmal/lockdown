@@ -1,7 +1,7 @@
 """Live demo app: watch face detection and phone distance in real time.
 
 Read-only. It never locks, never authenticates, never touches PAM. Its whole
-job is to make the two distance-based factors visible while you tune them.
+job is to make the two measured factors visible while you tune them.
 """
 
 from __future__ import annotations
@@ -57,6 +57,9 @@ video,img{width:100%;border-radius:6px;background:#000;display:block}
      padding:6px 14px;border-radius:999px;font:inherit;font-size:12px;cursor:pointer}
 .tab:hover{border-color:var(--accent);color:var(--fg)}
 .tab.on{background:rgba(88,166,255,.15);border-color:var(--accent);color:var(--accent)}
+.act{width:100%;margin:10px 0 6px;background:rgba(88,166,255,.12);border:1px solid var(--accent);
+     color:var(--accent);padding:8px;border-radius:6px;font:inherit;font-size:12px;cursor:pointer}
+.act:disabled{opacity:.5;cursor:wait}
 /* focus mode: hide everything that is not the chosen card */
 body[data-view="face"]  [data-card="phone"],
 body[data-view="face"]  [data-card="policy"],
@@ -82,10 +85,10 @@ body[data-view] [data-card="side"]{display:contents}
     <h2>face</h2>
     <img id="feed" src="/api/stream" alt="camera">
     <div class="row"><span>state</span><span id="face-state">—</span></div>
-    <div class="row"><span>distance</span><span id="face-dist" class="mono">—</span></div>
+    <div class="row"><span>similarity</span><span id="face-dist" class="mono">—</span></div>
     <div class="row"><span>threshold</span><span id="face-thr" class="mono">—</span></div>
     <div class="bar"><div class="fill" id="face-bar" style="width:0%"></div></div>
-    <div class="sub" style="margin:6px 0 0">lower is a better match; bar fills toward the threshold</div>
+    <div class="sub" style="margin:6px 0 0">higher is a better match; bar fills toward the threshold</div>
   </div>
   <div data-card="side">
     <div class="card" data-card="phone" style="margin-bottom:16px">
@@ -100,6 +103,8 @@ body[data-view] [data-card="side"]{display:contents}
       <h2>policy</h2>
       <div class="row"><span>fingerprint</span><span id="f-fp">—</span></div>
       <div class="row"><span>enrolled fingers</span><span id="f-enrolled">—</span></div>
+      <div class="row"><span>last scan</span><span id="f-scan">—</span></div>
+      <button id="f-btn" class="act">scan fingerprint now</button>
       <div class="row"><span>satisfied now</span><span id="pol">—</span></div>
       <div class="matrix" id="matrix"></div>
     </div>
@@ -123,13 +128,13 @@ async function tick(){
     const r = await fetch('/api/state'); const s = await r.json();
     const fs=document.getElementById('face-state');
     if(s.face.detected){
-      const d=s.face.distance, th=s.face.threshold;
-      fs.innerHTML = d<=th ? '<span class="pill ok">match</span>' : '<span class="pill bad">impostor</span>';
-      document.getElementById('face-dist').textContent=d.toFixed(1);
-      document.getElementById('face-thr').textContent=th.toFixed(1);
-      const pct=Math.min(100, Math.max(0, (d/th)*100));
+      const d=s.face.similarity, th=s.face.threshold;
+      fs.innerHTML = d>=th ? '<span class="pill ok">match</span>' : '<span class="pill bad">impostor</span>';
+      document.getElementById('face-dist').textContent=d.toFixed(3);
+      document.getElementById('face-thr').textContent=th.toFixed(3);
+      const pct=Math.min(100, Math.max(0, (d/1.0)*100));
       const bar=document.getElementById('face-bar');
-      bar.style.width=pct+'%'; bar.style.background = d<=th?'var(--ok)':'var(--bad)';
+      bar.style.width=pct+'%'; bar.style.background = d>=th?'var(--ok)':'var(--bad)';
     } else {
       fs.innerHTML='<span class="pill warn">no face</span>';
       document.getElementById('face-dist').textContent='—';
@@ -152,6 +157,19 @@ async function tick(){
     document.getElementById('matrix').innerHTML=s.policy.matrix.map(m=>'<div>'+m+'</div>').join('');
   }catch(e){}
 }
+document.getElementById('f-btn').onclick = async (e) => {
+  const b=e.target; b.disabled=true; b.textContent='touch the sensor…';
+  try{
+    const r=await fetch('/api/fingerprint',{method:'POST'});
+    const d=await r.json();
+    document.getElementById('f-scan').innerHTML = d.matched
+      ? '<span class="pill ok">matched</span>'
+      : '<span class="pill bad">'+ (d.message||'no match') +'</span>';
+  }catch(err){
+    document.getElementById('f-scan').innerHTML='<span class="pill warn">error</span>';
+  }
+  b.disabled=false; b.textContent='scan fingerprint now';
+};
 setInterval(tick, 1000); tick();
 </script>
 </body></html>"""
@@ -168,7 +186,7 @@ class DemoState:
             self.model_loaded = False
         self.prox = ProximityEngine(near_m=2.5, far_m=6.0)
         self.lock = threading.Lock()
-        self.face = {"detected": False, "distance": None, "threshold": self.cfg.verify.threshold}
+        self.face = {"detected": False, "similarity": None, "threshold": self.cfg.verify.threshold}
         self.phone = {"meters": None, "rssi": None, "near": False}
         self._started = False
         # One shared capture handle: opening the device per frame both fails
@@ -258,31 +276,31 @@ class DemoState:
             if scale < 1.0
             else frame
         )
-        face = camera.largest_face(small)
+        face = recognizer.largest_face(small)
         if face is None:
             with self.lock:
                 self._last_face = None
                 self.face = {
                     "detected": False,
-                    "distance": None,
+                    "similarity": None,
                     "threshold": self.cfg.verify.threshold,
                 }
             return
         with self.lock:
-            self._last_face = face.box
+            self._last_face = face[0]
         if not self.model_loaded:
             with self.lock:
                 self.face = {
                     "detected": True,
-                    "distance": None,
+                    "similarity": None,
                     "threshold": self.cfg.verify.threshold,
                 }
             return
-        result = self.rec.predict(face.gray)
+        result = self.rec.predict(face[1])
         with self.lock:
             self.face = {
                 "detected": True,
-                "distance": result.distance,
+                "similarity": result.similarity,
                 "threshold": result.threshold,
             }
 
@@ -308,9 +326,9 @@ class DemoState:
             password=False,
             fingerprint=False,
             phone=phone["near"],
-            face=bool(face["distance"] is not None and face["distance"] <= face["threshold"]),
+            face=bool(face["similarity"] is not None and face["similarity"] >= face["threshold"]),
             phone_meters=phone["meters"],
-            face_distance=face["distance"],
+            face_similarity=face["similarity"],
             face_threshold=face["threshold"],
         )
         policy = Policy()
@@ -390,6 +408,18 @@ def create_app() -> FastAPI:
                 time.sleep(0.02)
 
         return StreamingResponse(gen(), media_type="multipart/x-mixed-replace; boundary=frame")
+
+    @app.post("/api/fingerprint")
+    def api_fingerprint():
+        # Blocks until the sensor is touched, so the browser shows a waiting
+        # state. Read-only: it reports a match, it never authenticates anything.
+        from . import fingerprint
+
+        try:
+            matched, message = fingerprint.verify(timeout=25)
+        except Exception as exc:
+            return JSONResponse({"matched": False, "message": str(exc)}, status_code=500)
+        return JSONResponse({"matched": matched, "message": message})
 
     return app
 

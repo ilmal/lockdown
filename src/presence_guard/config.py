@@ -31,11 +31,12 @@ class CameraConfig:
 
 @dataclass
 class VerifyConfig:
-    threshold: float = 62.0
+    # SFace cosine similarity: HIGHER is a better match. 0.363 is the model's
+    # published same-person cutoff; measured genuine matches land at 0.53-0.66.
+    threshold: float = 0.40
     impostor_checks: int = 2
     absent_grace_minutes: int = 5
-    # Match against this many frames and keep the best score. One frame is a
-    # lottery; measured same-person spread was 15.7 vs 4.8 for six frames.
+    # Match against this many frames and keep the best score.
     frames: int = 6
 
 

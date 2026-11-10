@@ -15,53 +15,44 @@ def _cfg(tmp_path, monkeypatch, **verify) -> config.Config:
     return cfg
 
 
-def _write_model(cfg: config.Config) -> None:
-    import cv2
-
-    faces, labels = [], []
-    rng = np.random.default_rng(0)
-    base = np.full((100, 100), 120, dtype=np.uint8)
-    for _ in range(12):
-        noise = rng.integers(-4, 5, size=(100, 100), dtype=np.int16)
-        faces.append(np.clip(base + noise, 0, 255).astype(np.uint8))
-        labels.append(0)
-    model = cv2.face.LBPHFaceRecognizer_create()
-    model.train(faces, np.array(labels, dtype=np.int32))
-    path = recognizer.model_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    model.write(str(path))
-    recognizer.meta_path().write_text("{}")
+@pytest.fixture(scope="module")
+def face_like():
+    """A synthetic image is useless for a real detector, so skip if no model."""
+    pytest.importorskip("cv2")
+    return None
 
 
-def test_model_roundtrip_matches_similar_face(tmp_path, monkeypatch):
-    cfg = _cfg(tmp_path, monkeypatch, threshold=1000.0)
-    _write_model(cfg)
-
-    rec = recognizer.Recognizer(cfg.verify.threshold)
-    rec.load()
-    probe = np.full((100, 100), 120, dtype=np.uint8)
-    result = rec.predict(probe)
-
-    assert result.label == 0
-    assert result.matched is True
+def test_result_verdict_uses_similarity_floor():
+    ok = recognizer.Result(matched=True, similarity=0.8, threshold=0.4)
+    bad = recognizer.Result(matched=False, similarity=0.1, threshold=0.4)
+    assert ok.verdict == "match"
+    assert bad.verdict == "impostor"
 
 
-def test_impossible_threshold_rejects(tmp_path, monkeypatch):
-    cfg = _cfg(tmp_path, monkeypatch, threshold=0.0)
-    _write_model(cfg)
-
-    rec = recognizer.Recognizer(cfg.verify.threshold)
-    rec.load()
-    result = rec.predict(np.full((100, 100), 120, dtype=np.uint8))
-
-    assert result.matched is False
-    assert result.verdict == "impostor"
+def test_threshold_default_is_sface_cutoff():
+    assert 0.36 <= config.Config().verify.threshold <= 0.5
 
 
-def test_load_without_model_raises(tmp_path, monkeypatch):
+def test_load_without_enrollment_raises(tmp_path, monkeypatch):
     _cfg(tmp_path, monkeypatch)
     with pytest.raises(FileNotFoundError):
-        recognizer.Recognizer(62.0).load()
+        recognizer.Recognizer(0.4).load()
+
+
+def test_enrolled_reflects_files(tmp_path, monkeypatch):
+    _cfg(tmp_path, monkeypatch)
+    assert recognizer.enrolled() is False
+    recognizer.embeddings_path().parent.mkdir(parents=True, exist_ok=True)
+    np.save(recognizer.embeddings_path(), np.zeros((3, 128), dtype=np.float32))
+    recognizer.meta_path().write_text("{}")
+    assert recognizer.enrolled() is True
+
+
+def test_model_urls_and_checksums_are_pinned():
+    for key, (url, digest) in recognizer.MODELS.items():
+        assert url.startswith("https://")
+        assert len(digest) == 64
+        assert all(c in "0123456789abcdef" for c in digest)
 
 
 @pytest.mark.parametrize(

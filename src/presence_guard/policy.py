@@ -24,7 +24,7 @@ class FactorState:
     phone: bool = False
     face: bool = False
     phone_meters: float | None = None
-    face_distance: float | None = None
+    face_similarity: float | None = None
     face_threshold: float | None = None
     notes: dict[str, str] = field(default_factory=dict)
 
@@ -35,7 +35,7 @@ class FactorState:
             "phone": self.phone,
             "face": self.face,
             "phone_meters": self.phone_meters,
-            "face_distance": self.face_distance,
+            "face_similarity": self.face_similarity,
             "face_threshold": self.face_threshold,
             "notes": self.notes,
         }
