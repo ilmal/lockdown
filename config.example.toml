@@ -34,3 +34,10 @@ host = "100.x.y.z"
 port = 8791
 # Path to the bearer token. Keep it outside this repo.
 token_file = "~/.claude/secrets/presence-guard-token"
+
+[phone]
+# "hotspot" identifies YOUR phone by its Personal Hotspot SSID — stable, no app,
+# no beacon. "ble" degrades to "any Apple device is near".
+mode = "hotspot"
+# The exact SSID from Settings > Personal Hotspot on the iPhone.
+hotspot_ssid = "Nils-iPhone"

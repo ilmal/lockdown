@@ -47,6 +47,15 @@ class GuardConfig:
 
 
 @dataclass
+class PhoneConfig:
+    # "hotspot" identifies the phone by its Personal Hotspot SSID: stable,
+    # no app, no beacon. "ble" falls back to "any Apple device is near".
+    mode: str = "hotspot"
+    # The SSID you set in Settings > Personal Hotspot. Empty = not configured.
+    hotspot_ssid: str = ""
+
+
+@dataclass
 class RemoteConfig:
     host: str = "127.0.0.1"
     port: int = 8791
@@ -58,6 +67,7 @@ class Config:
     camera: CameraConfig = field(default_factory=CameraConfig)
     verify: VerifyConfig = field(default_factory=VerifyConfig)
     guard: GuardConfig = field(default_factory=GuardConfig)
+    phone: PhoneConfig = field(default_factory=PhoneConfig)
     remote: RemoteConfig = field(default_factory=RemoteConfig)
 
     @property
@@ -73,6 +83,7 @@ _SECTIONS = {
     "camera": CameraConfig,
     "verify": VerifyConfig,
     "guard": GuardConfig,
+    "phone": PhoneConfig,
     "remote": RemoteConfig,
 }
 

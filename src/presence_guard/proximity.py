@@ -90,15 +90,57 @@ def scan_apple_rssi(seconds: float = 4.0) -> list[float]:
 class ProximityEngine:
     """Turns repeated scans into a smoothed distance with hysteresis."""
 
-    def __init__(self, near_m: float = 2.5, far_m: float = 6.0, window: int = 6):
+    def __init__(
+        self,
+        near_m: float = 2.5,
+        far_m: float = 6.0,
+        window: int = 6,
+        mode: str = "ble",
+        hotspot_ssid: str = "",
+    ):
         self.near_m = near_m
         self.far_m = far_m
         self.samples: deque[float] = deque(maxlen=window)
         self.near = False
         self.last_reading: Reading | None = None
         self.last_error: str | None = None
+        self.mode = mode
+        self.hotspot_ssid = hotspot_ssid
+        self.last_bssid: str | None = None
 
     def poll(self) -> Reading | None:
+        if self.mode == "hotspot":
+            return self._poll_hotspot()
+        return self._poll_ble()
+
+    def _poll_hotspot(self) -> Reading | None:
+        if not self.hotspot_ssid:
+            self.last_error = "phone.hotspot_ssid is not configured"
+            return None
+        reading = scan_hotspot(self.hotspot_ssid)
+        if reading is None:
+            # Not visible means out of range OR hotspot off; either way the
+            # phone cannot contribute this factor.
+            self.last_error = f"hotspot {self.hotspot_ssid!r} not visible"
+            self.near = False
+            self.samples.clear()
+            return None
+        self.last_bssid = reading.bssid
+        self.samples.append(reading.meters)
+        meters = statistics.median(self.samples)
+        if meters <= self.near_m:
+            self.near = True
+        elif meters >= self.far_m:
+            self.near = False
+        self.last_error = None
+        self.last_reading = Reading(
+            rssi=(reading.signal / 2.0) - 100.0,
+            meters=meters,
+            samples=len(self.samples),
+        )
+        return self.last_reading
+
+    def _poll_ble(self) -> Reading | None:
         values = scan_apple_rssi()
         if not values:
             self.last_error = "no Apple BLE advertiser seen"
@@ -118,3 +160,72 @@ class ProximityEngine:
         self.last_reading = Reading(rssi=smoothed, meters=meters, samples=len(self.samples))
         return self.last_reading
 
+
+
+# --------------------------------------------------------------------------
+# Wi-Fi proximity: identify the phone by its Personal Hotspot SSID.
+#
+# This is the only local signal that gives STABLE identity with no app and no
+# beacon, because the SSID is a name you choose and the iPhone keeps its
+# hotspot BSSID stable per device. Signal strength then gives distance the
+# same way BLE does.
+#
+# Requires: Settings > Personal Hotspot > Allow Others to Join = on, and
+# "Maximize Compatibility" = on so it advertises 2.4 GHz (a 5 GHz-only hotspot
+# is invisible to many adapters and scans far more slowly).
+# --------------------------------------------------------------------------
+
+
+@dataclass
+class WifiReading:
+    ssid: str
+    bssid: str
+    signal: int  # 0-100 from NetworkManager
+    meters: float
+    at: float = field(default_factory=time.time)
+
+
+def wifi_signal_to_meters(signal_pct: int) -> float:
+    """Approximate distance from NetworkManager's 0-100 quality figure.
+
+    NM maps RSSI roughly linearly: 100 ~= -50 dBm, 0 ~= -100 dBm, so
+    rssi = signal/2 - 100. Fed through the same path-loss model as BLE.
+    """
+    rssi = (signal_pct / 2.0) - 100.0
+    return rssi_to_meters(rssi)
+
+
+def scan_hotspot(ssid: str) -> WifiReading | None:
+    """Find a specific SSID in a fresh scan. Returns None when not visible."""
+    try:
+        subprocess.run(["nmcli", "dev", "wifi", "rescan"], capture_output=True, timeout=20)
+    except (OSError, subprocess.SubprocessError):
+        pass
+    try:
+        out = subprocess.run(
+            ["nmcli", "-e", "no", "-t", "-f", "SSID,SIGNAL,BSSID", "dev", "wifi"],
+            capture_output=True,
+            text=True,
+            timeout=25,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    best: WifiReading | None = None
+    for line in out.stdout.splitlines():
+        parts = line.split(":")
+        if len(parts) < 3:
+            continue
+        name = parts[0]
+        if name != ssid:
+            continue
+        try:
+            signal = int(parts[1])
+        except ValueError:
+            continue
+        bssid = ":".join(parts[2:])
+        reading = WifiReading(
+            ssid=name, bssid=bssid, signal=signal, meters=wifi_signal_to_meters(signal)
+        )
+        if best is None or reading.signal > best.signal:
+            best = reading
+    return best

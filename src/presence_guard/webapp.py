@@ -94,6 +94,7 @@ body[data-view] [data-card="side"]{display:contents}
     <div class="card" data-card="phone" style="margin-bottom:16px">
       <h2>phone proximity (BLE)</h2>
       <div class="big" id="phone-m"><span class="mono">—</span> <span style="font-size:13px;color:var(--dim)">m</span></div>
+      <div class="row"><span>mode</span><span id="phone-mode">—</span></div>
       <div class="row"><span>state</span><span id="phone-state">—</span></div>
       <div class="row"><span>rssi (smoothed)</span><span id="phone-rssi" class="mono">—</span></div>
       <div class="bar"><div class="fill" id="phone-bar" style="width:0%"></div></div>
@@ -139,6 +140,7 @@ async function tick(){
       fs.innerHTML='<span class="pill warn">no face</span>';
       document.getElementById('face-dist').textContent='—';
     }
+    document.getElementById('phone-mode').textContent = s.phone_mode || '—';
     const ph=s.phone;
     if(ph.meters!=null){
       document.getElementById('phone-m').innerHTML='<span class="mono">'+ph.meters.toFixed(1)+'</span> <span style="font-size:13px;color:var(--dim)">m</span>';
@@ -148,7 +150,7 @@ async function tick(){
       b.style.width=pct+'%'; b.style.background=ph.near?'var(--ok)':'var(--bad)';
       document.getElementById('phone-state').innerHTML = ph.near?'<span class="pill ok">near</span>':'<span class="pill bad">far</span>';
     } else {
-      document.getElementById('phone-state').innerHTML='<span class="pill warn">no signal</span>';
+      document.getElementById('phone-state').innerHTML='<span class="pill warn">'+(s.phone_error||'no signal')+'</span>';
       document.getElementById('phone-m').innerHTML='<span style="color:var(--dim)">— m</span>';
     }
     document.getElementById('f-fp').innerHTML= s.fingerprint.available?'<span class="pill ok">present</span>':'<span class="pill bad">absent</span>';
@@ -184,7 +186,12 @@ class DemoState:
             self.model_loaded = True
         except FileNotFoundError:
             self.model_loaded = False
-        self.prox = ProximityEngine(near_m=2.5, far_m=6.0)
+        self.prox = ProximityEngine(
+            near_m=2.5,
+            far_m=6.0,
+            mode=self.cfg.phone.mode,
+            hotspot_ssid=self.cfg.phone.hotspot_ssid,
+        )
         self.lock = threading.Lock()
         self.face = {"detected": False, "similarity": None, "threshold": self.cfg.verify.threshold}
         self.phone = {"meters": None, "rssi": None, "near": False}
@@ -335,6 +342,8 @@ class DemoState:
         return {
             "face": face,
             "phone": phone,
+            "phone_mode": self.cfg.phone.mode,
+            "phone_error": self.prox.last_error,
             "fingerprint": {"available": _fp_available(), "enrolled": _fp_enrolled()},
             "policy": policy.evaluate(state),
             "error": self.last_error,
