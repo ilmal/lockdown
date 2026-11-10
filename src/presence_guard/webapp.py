@@ -411,12 +411,12 @@ def create_app() -> FastAPI:
 
     @app.post("/api/fingerprint")
     def api_fingerprint():
-        # Blocks until the sensor is touched, so the browser shows a waiting
-        # state. Read-only: it reports a match, it never authenticates anything.
+        # Blocks while it tries each enrolled finger, so the browser shows a
+        # waiting state. Read-only: it reports a match, it never authenticates.
         from . import fingerprint
 
         try:
-            matched, message = fingerprint.verify(timeout=25)
+            matched, message = fingerprint.verify_any(timeout=8, verbose=True)
         except Exception as exc:
             return JSONResponse({"matched": False, "message": str(exc)}, status_code=500)
         return JSONResponse({"matched": matched, "message": message})
