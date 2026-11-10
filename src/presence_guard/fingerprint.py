@@ -1,9 +1,33 @@
-"""Fingerprint verification through fprintd."""
+"""Fingerprint verification that accepts ANY enrolled finger.
+
+`fprintd-verify` does not do this. With no `-f` argument it selects the *first*
+enrolled finger and verifies only against that one: with right-index and
+right-little enrolled, a scan printed `Verifying: right-index-finger` and never
+advanced, so the second finger could never authenticate.
+
+fprintd's D-Bus API supports the right mode — `VerifyStart("any")` is accepted,
+the device emits `VerifyFingerSelected` for whichever enrolled finger was
+presented, then `VerifyStatus`.
+
+Uses jeepney (pure Python): dbus-python needs a C build and system headers,
+which makes the package painful to install in a venv.
+"""
 
 from __future__ import annotations
 
 import getpass
 import subprocess
+import time
+
+from jeepney import DBusAddress, HeaderFields, MatchRule, new_method_call, message_bus
+from jeepney.io.blocking import open_dbus_connection
+
+DBUS_NAME = "net.reactivated.Fprint"
+DEVICE_PATH = "/net/reactivated/Fprint/Device/0"
+IFACE = "net.reactivated.Fprint.Device"
+
+DEVICE = DBusAddress(DEVICE_PATH, bus_name=DBUS_NAME, interface=IFACE)
+_MATCH_DONE = ("verify-match", "verify-no-match")
 
 
 class FingerprintError(RuntimeError):
@@ -11,7 +35,6 @@ class FingerprintError(RuntimeError):
 
 
 def available(user: str | None = None) -> bool:
-    """True when a fingerprint reader is present (enrollment not required)."""
     user = user or getpass.getuser()
     try:
         out = subprocess.run(
@@ -23,7 +46,6 @@ def available(user: str | None = None) -> bool:
 
 
 def enrolled_fingers(user: str | None = None) -> list[str]:
-    """Fingers with a stored print, e.g. ['right-index', 'left-index']."""
     user = user or getpass.getuser()
     try:
         out = subprocess.run(
@@ -36,25 +58,63 @@ def enrolled_fingers(user: str | None = None) -> list[str]:
     ]
 
 
-def verify(user: str | None = None, timeout: int = 20) -> tuple[bool, str]:
-    """Prompt for a finger. Returns (matched, message).
+def _call(conn, method: str, signature: str = "", body: tuple = ()):
+    msg = new_method_call(DEVICE, method, signature=signature, body=body)
+    return conn.send_and_get_reply(msg)
 
-    Blocks until the sensor reads a finger or the timeout expires, so it must
-    never be called from the guard loop.
-    """
+
+def verify_any(
+    user: str | None = None, timeout: int = 20, verbose: bool = False
+) -> tuple[bool, str]:
+    """Verify against ANY enrolled finger. Returns (matched, message)."""
     user = user or getpass.getuser()
     try:
-        proc = subprocess.run(
-            ["fprintd-verify", user], capture_output=True, text=True, timeout=timeout
-        )
-    except subprocess.TimeoutExpired:
-        return False, "timed out waiting for a finger"
-    except (OSError, subprocess.SubprocessError) as exc:
-        raise FingerprintError(f"fprintd-verify failed: {exc}") from exc
+        conn = open_dbus_connection(bus="SYSTEM")
+    except Exception as exc:
+        raise FingerprintError(f"cannot connect to the system bus: {exc}") from exc
 
-    blob = (proc.stdout + proc.stderr).lower()
-    if proc.returncode == 0 and "verify-match" in blob:
-        return True, "fingerprint matched"
-    if "verify-no-match" in blob:
-        return False, "fingerprint did not match"
-    return False, (proc.stderr or proc.stdout or "no result").strip()[:200]
+    try:
+        _call(conn, "Claim", "s", (user,))
+
+        rule = MatchRule(type="signal", interface=IFACE, path=DEVICE_PATH)
+        signals = conn.filter(rule, bufsize=50)
+
+        _call(conn, "VerifyStart", "s", ("any",))
+        state = {"matched": False, "message": "no result", "done": False, "finger": None}
+        deadline = time.monotonic() + timeout
+        while not state["done"] and time.monotonic() < deadline:
+            try:
+                msg = signals.get(timeout=max(0.05, deadline - time.monotonic()))
+            except Exception:
+                continue
+            member = msg.header.fields.get(HeaderFields.member)
+            body = msg.body
+            if member == "VerifyFingerSelected" and body:
+                state["finger"] = str(body[0])
+                if verbose:
+                    print(f"  scanning against {state['finger']}", flush=True)
+            elif member == "VerifyStatus" and body:
+                result = str(body[0])
+                state["message"] = result
+                if result in _MATCH_DONE:
+                    state["matched"] = result == "verify-match"
+                    state["done"] = True
+                elif verbose:
+                    print(f"  {result}", flush=True)
+
+        if not state["done"]:
+            return False, "timed out waiting for a finger"
+        label = f" ({state['finger']})" if state["finger"] else ""
+        return state["matched"], f"{'matched' if state['matched'] else 'did not match'}{label}"
+    finally:
+        for method in ("VerifyStop", "Release"):
+            try:
+                _call(conn, method)
+            except Exception:
+                pass
+        conn.close()
+
+
+def verify(user: str | None = None, timeout: int = 20) -> tuple[bool, str]:
+    """Backwards-compatible alias: always any-finger."""
+    return verify_any(user, timeout=timeout)
