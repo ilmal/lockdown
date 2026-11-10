@@ -16,50 +16,76 @@ findmnt -no SOURCE /swap.img      # what backs the swap file
 ```
 
 On this laptop `/swap.img` lives on `/dev/mapper/ubuntu--vg-ubuntu--lv`, which is
-inside `dm_crypt-0`. So hibernating is safe here, **once it is set up**.
+inside `dm_crypt-0`. So the hibernation image is encrypted at rest.
 
-## Current state of this machine
+## Status on this laptop
 
-Not usable yet. Measured:
+Configured 2026-11-10 by `scripts/setup-hibernate.sh`:
 
 | Requirement | Status |
 |---|---|
-| Kernel advertises `disk` in `/sys/power/state` | yes |
-| Swap ≥ RAM | **no** — 8 GiB swap vs 61 GiB RAM |
-| Resume device configured | **no** — `/sys/power/resume` is `0:0` |
+| Kernel advertises `disk` | yes (`CONFIG_HIBERNATION=y`) |
+| Swap ≥ RAM | **yes** — 65 GiB swap file, 61.2 GiB RAM |
+| Resume device in kernel cmdline | **yes** — `resume=UUID=… resume_offset=…` |
+| Resume module in initrd | **yes** — forced, because `74resume` self-disables at `0:0` |
+| `/sys/power/resume` set | **after the next reboot** |
 
-`presence-guard hibernate` runs exactly these checks and refuses with the list
-of reasons rather than suspending and hanging.
+`vm.swappiness=1` keeps swap effectively unused except for hibernation.
 
-## Making it work
+## This machine is dracut, not initramfs-tools
 
-1. **Grow swap to more than RAM.** With 61 GiB of RAM this is a 62+ GiB file,
-   and it must be contiguous enough for the kernel's resume code. On this box
-   there is 1.6 TiB free, so size is not the obstacle. A swap *file* works on
-   Ubuntu (the kernel supports `resume=` on a file since 5.x) but a dedicated
-   LVM logical volume is simpler to point at.
-2. **Tell the kernel and initramfs where the image is**, e.g. in
-   `/etc/default/grub`:
-   ```
-   GRUB_CMDLINE_LINUX_DEFAULT="... resume=/dev/mapper/ubuntu--vg-swap"
-   ```
-   plus `RESUME=/dev/mapper/ubuntu--vg-swap` in
-   `/etc/initramfs-tools/conf.d/resume`, then `update-grub` and
-   `update-initramfs -u -k all`.
-3. **Verify** with `systemctl hibernate` once, while nothing important is open.
-   A failed first attempt can leave the machine unbootable until you fix the
-   resume parameters from a live USB.
+Ubuntu 26.04 boots a **dracut** initrd with `systemd-initrd`. Most hibernation
+guides are written for initramfs-tools and write files nothing here reads
+(`/etc/initramfs-tools/conf.d/resume` does not exist for dracut). The relevant
+pieces:
 
-Do that setup deliberately, not while debugging a lockout. Until then, `panic`
-(poweroff) is the only action that guarantees the LUKS key is gone.
+- `/etc/dracut.conf.d/90-hibernate.conf` — `force_add_dracutmodules+=" resume "`
+- `update-initramfs` is a **symlink to `/usr/sbin/update-initramfs` owned by the
+  dracut package**; it is a dracut shim, so its flags are the dracut ones.
+- The kernel cmdline comes from `/etc/default/grub`
+  (`GRUB_CMDLINE_LINUX_DEFAULT`), plus drop-ins in `/etc/default/grub.d/`.
+
+### Why the resume module must be forced
+
+dracut's `74resume` `check()` returns 255 when `/sys/power/resume` is `0:0`,
+which is exactly the state before hibernation is enabled. Without
+`force_add_dracutmodules`, the module is dropped, the initrd has no
+`systemd-hibernate-resume`, and hibernation powers off and then fails to
+restore. Verify with:
+
+```bash
+lsinitrd /boot/initrd.img-$(uname -r) | grep systemd-hibernate-resume
+```
+
+## Fragmentation: expected here, and not fatal
+
+The swap file spans **42 extents** and `e4defrag` cannot reduce it (measured).
+The kernel's swapfile resume path uses the filesystem's block list rather than
+assuming one contiguous run, so this works. The important safety property:
+
+```
+Unable to resume from device '%s' offset %lu, continuing boot process.
+```
+
+A resume that cannot find its image **boots normally instead of hanging**, so a
+misconfiguration costs you the suspended session, not the machine.
 
 ## The trade-off, stated plainly
 
 - Hibernate: session restored, key destroyed during the off period.
-- Resume-from-hibernate decrypts RAM using your passphrase at boot, so a thief
-  who steals the powered-off machine still cannot read the image.
+- Resume decrypts RAM using your passphrase at boot, so a thief who steals the
+  powered-off machine still cannot read the image.
 - Suspend (S3/s2idle): fastest, and the key stays in RAM — the thing you wanted
   to avoid.
 
-This machine currently reports `s2idle` in `/sys/power/mem_sleep`, so a plain
-lid-close suspend is the least safe of the three.
+This machine reports `s2idle` in `/sys/power/mem_sleep`, so a plain lid-close
+suspend is the least safe of the three.
+
+## If something goes wrong
+
+`setup-hibernate.sh` writes `/root/hibernate-setup-<timestamp>/rollback.sh`,
+which restores `/etc/fstab`, `/etc/default/grub`, removes the dracut and sysctl
+drop-ins, recreates the 8 GiB swap file, and rebuilds the initrd and GRUB.
+
+Do not edit the resume parameters by hand while debugging a lockout; run the
+rollback instead.
