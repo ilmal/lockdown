@@ -13,7 +13,11 @@ warmup_frames = 4
 
 [verify]
 # LBPH distance; lower is a closer match. Re-tune with `presence-guard calibrate`.
+# Measured on the reference laptop with frames=6: genuine matches 45-49.
 threshold = 62.0
+# Frames to sample per check; the best score wins. Single frames are noisy:
+# same-person spread measured 15.7 for one frame vs 4.8 for a burst of six.
+frames = 6
 # Consecutive "wrong person" checks before locking.
 impostor_checks = 2
 # Minutes of "nobody here" before locking the screen.

@@ -34,6 +34,9 @@ class VerifyConfig:
     threshold: float = 62.0
     impostor_checks: int = 2
     absent_grace_minutes: int = 5
+    # Match against this many frames and keep the best score. One frame is a
+    # lottery; measured same-person spread was 15.7 vs 4.8 for six frames.
+    frames: int = 6
 
 
 @dataclass

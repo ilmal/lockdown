@@ -43,7 +43,7 @@ def _cmd_enroll(args: argparse.Namespace) -> int:
     cfg = config.load()
     print(f"enrolling {args.samples} samples from {cfg.camera.device}")
     print("look at the camera; move your head slightly between captures")
-    recognizer.enroll_samples(cfg, args.samples)
+    recognizer.enroll_samples(cfg, args.samples, allow_multiple_faces=args.allow_multiple_faces)
     path = recognizer.train(cfg)
     print(f"model written to {path}")
     print("now run: presence-guard check --verbose")
@@ -52,21 +52,36 @@ def _cmd_enroll(args: argparse.Namespace) -> int:
 
 def _cmd_check(args: argparse.Namespace) -> int:
     cfg = config.load()
-    frame = camera.grab_frame(
-        cfg.camera.device, cfg.camera.width, cfg.camera.height, cfg.camera.warmup_frames
-    )
-    face = camera.largest_face(frame)
-    if face is None:
-        print("no face detected")
-        return 2
     rec = recognizer.Recognizer(cfg.verify.threshold)
     rec.load()
-    result = rec.predict(face.gray)
-    print(
-        f"{result.verdict}: distance={result.distance:.1f} threshold={result.threshold:.1f} "
-        f"face_area={face.area}"
+    frames = args.frames or cfg.verify.frames
+    cap = camera.open_camera(
+        cfg.camera.device, cfg.camera.width, cfg.camera.height, cfg.camera.warmup_frames
     )
-    return 0 if result.matched else 1
+    best = None
+    taken = 0
+    try:
+        while taken < frames:
+            ok, frame = cap.read()
+            if not ok or frame is None:
+                break
+            face = camera.largest_face(frame)
+            if face is None:
+                continue
+            taken += 1
+            result = rec.predict(face.gray)
+            if best is None or result.distance < best.distance:
+                best = result
+    finally:
+        cap.release()
+    if best is None:
+        print("no face detected")
+        return 2
+    print(
+        f"{best.verdict}: distance={best.distance:.1f} threshold={best.threshold:.1f} "
+        f"frames={taken}"
+    )
+    return 0 if best.matched else 1
 
 
 def _cmd_calibrate(args: argparse.Namespace) -> int:
@@ -149,10 +164,16 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("enroll", help="capture samples and train the model")
     p.add_argument("--samples", type=int, default=25)
+    p.add_argument(
+        "--allow-multiple-faces",
+        action="store_true",
+        help="enroll even when more than one face is in frame (default: skip those)",
+    )
     p.set_defaults(func=_cmd_enroll)
 
     p = sub.add_parser("check", help="one verification against the enrolled model")
     p.add_argument("--verbose", action="store_true")
+    p.add_argument("--frames", type=int, help="frames to sample (default from config)")
     p.set_defaults(func=_cmd_check)
 
     p = sub.add_parser("calibrate", help="print match distances to tune the threshold")

@@ -64,7 +64,12 @@ class Recognizer:
         )
 
 
-def enroll_samples(cfg: config.Config, samples: int, show_progress: bool = True) -> Path:
+def enroll_samples(
+    cfg: config.Config,
+    samples: int,
+    show_progress: bool = True,
+    allow_multiple_faces: bool = False,
+) -> Path:
     out_dir = config.data_dir() / "samples"
     out_dir.mkdir(parents=True, exist_ok=True)
     for old in out_dir.glob("*.png"):
@@ -75,15 +80,22 @@ def enroll_samples(cfg: config.Config, samples: int, show_progress: bool = True)
     )
     saved = 0
     attempts = 0
+    skipped_multi = 0
     try:
         while saved < samples and attempts < samples * 40:
             attempts += 1
             ok, frame = cap.read()
             if not ok or frame is None:
                 continue
-            face = camera.largest_face(frame)
-            if face is None:
+            faces = camera.detect_faces(frame)
+            if not faces:
                 continue
+            # Enrolling whichever face happens to be largest could teach the
+            # model the wrong person, so refuse ambiguous scenes by default.
+            if len(faces) > 1 and not allow_multiple_faces:
+                skipped_multi += 1
+                continue
+            face = faces[0]
             cv2.imwrite(str(out_dir / f"{saved:03d}.png"), face.gray)
             saved += 1
             if show_progress:
@@ -92,6 +104,16 @@ def enroll_samples(cfg: config.Config, samples: int, show_progress: bool = True)
         cap.release()
     if show_progress:
         print()
+    if skipped_multi and show_progress:
+        print(
+            f"  skipped {skipped_multi} frame(s) with more than one face; "
+            "enroll alone, or pass --allow-multiple-faces"
+        )
+    if saved < max(8, samples // 3):
+        raise RuntimeError(
+            f"only {saved} usable frames; check lighting and that your face fills the frame"
+        )
+    return out_dir
     if saved < max(8, samples // 3):
         raise RuntimeError(
             f"only {saved} usable frames; check lighting and that your face fills the frame"

@@ -7,9 +7,12 @@ from presence_guard import camera, config, guard, recognizer
 
 
 class FakeRec:
+    """One verdict per prediction; tests pin frames=1 so 1 check == 1 call."""
+
     def __init__(self, matches):
         self._matches = list(matches)
         self._i = 0
+        self.threshold = 62.0
 
     def load(self):
         pass
@@ -17,12 +20,18 @@ class FakeRec:
     def predict(self, _face):
         value = self._matches[min(self._i, len(self._matches) - 1)]
         self._i += 1
-        return recognizer.Result(matched=value, distance=40.0 if value else 90.0, threshold=62.0, label=0)
+        return recognizer.Result(
+            matched=value,
+            distance=40.0 if value else 90.0,
+            threshold=self.threshold,
+            label=0,
+        )
 
 
 def _guard(tmp_path, monkeypatch, matches, **verify):
     monkeypatch.setenv("PRESENCE_GUARD_DATA", str(tmp_path))
     cfg = config.Config()
+    cfg.verify.frames = 1
     for key, value in verify.items():
         setattr(cfg.verify, key, value)
 
@@ -36,8 +45,22 @@ def _guard(tmp_path, monkeypatch, matches, **verify):
     return g
 
 
+class _FakeCamera:
+    """Stands in for cv2.VideoCapture so the burst path needs no hardware."""
+
+    def __init__(self, *_a, **_k):
+        pass
+
+    def read(self):
+        return True, np.zeros((360, 640, 3), np.uint8)
+
+    def release(self):
+        pass
+
+
 def _patch_face(monkeypatch, present: bool):
     fake_face = camera.Face((0, 0, 10, 10), np.zeros((100, 100), np.uint8)) if present else None
+    monkeypatch.setattr(guard.camera, "open_camera", lambda *a, **k: _FakeCamera())
     monkeypatch.setattr(guard.camera, "grab_frame", lambda *a, **k: np.zeros((360, 640, 3), np.uint8))
     monkeypatch.setattr(guard.camera, "largest_face", lambda *a, **k: fake_face)
 
@@ -100,3 +123,26 @@ def test_impostor_threshold_is_respected(tmp_path, monkeypatch, checks):
     actions = [g.evaluate_once().action for _ in range(checks)]
     assert actions[-1] == "would-lock"
     assert all(a is None for a in actions[:-1])
+
+
+def test_burst_keeps_the_best_score(tmp_path, monkeypatch):
+    """A bad frame must not outvote good ones in the same check."""
+    _patch_face(monkeypatch, present=True)
+    g = _guard(tmp_path, monkeypatch, [True])
+    g.cfg.verify.frames = 6
+
+    distances = iter([90.0, 95.0, 45.0, 88.0, 92.0, 50.0])
+    seen = []
+
+    def predict(_face):
+        d = next(distances)
+        seen.append(d)
+        return recognizer.Result(matched=d <= 62.0, distance=d, threshold=62.0, label=0)
+
+    g.rec.predict = predict
+
+    decision = g.evaluate_once()
+
+    assert decision.state == "present"
+    assert decision.distance == 45.0
+    assert len(seen) == 6
