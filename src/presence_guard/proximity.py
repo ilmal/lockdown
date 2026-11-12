@@ -32,6 +32,7 @@ TX_POWER_1M = -59.0
 PATH_LOSS_EXPONENT = 2.0
 
 _RSSI_LINE = re.compile(r"Device ([0-9A-F:]{17}) RSSI: 0x[0-9a-f]+ \((-?\d+)\)")
+_ANSI = re.compile(r"\x1b\[[0-9;]*[a-zA-Z]")
 
 
 def rssi_to_meters(
@@ -71,6 +72,9 @@ def scan_apple_rssi(seconds: float = 4.0) -> list[float]:
             line = proc.stdout.readline() if proc.stdout else ""
             if not line:
                 break
+            # bluetoothctl colourises its output; the codes prefix every line
+            # and would otherwise hide the payload from the hex patterns below.
+            line = _ANSI.sub("", line.rstrip())
             m = _RSSI_LINE.search(line)
             if m:
                 current = m.group(1)
@@ -342,14 +346,19 @@ def scan_ibeacon(uuid: str, seconds: float = 6.0) -> IBeaconReading | None:
 
     deadline = time.monotonic() + seconds
     try:
-        write("menu scan")
-        write("duplicate-data on")
-        write("back")
-        write("scan on")
+        # Small gaps between commands: without them bluetoothctl can start the
+        # scan before duplicate-data is applied, and the iBeacon frame is then
+        # deduplicated away and never seen.
+        for cmd in ("menu scan", "duplicate-data on", "back", "scan on"):
+            write(cmd)
+            time.sleep(0.5)
         while time.monotonic() < deadline:
             line = proc.stdout.readline() if proc.stdout else ""
             if not line:
                 break
+            # bluetoothctl colourises its output; the codes prefix every line
+            # and would otherwise hide the payload from the hex patterns below.
+            line = _ANSI.sub("", line.rstrip())
             m = _RSSI_LINE.search(line)
             if m:
                 if collecting and buf:
