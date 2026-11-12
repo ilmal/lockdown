@@ -285,26 +285,35 @@ def _uuid_from_bytes(raw: bytes) -> str:
     return f"{h[0:8]}-{h[8:12]}-{h[12:16]}-{h[16:20]}-{h[20:32]}"
 
 
+
 def scan_ibeacon(uuid: str, seconds: float = 6.0) -> IBeaconReading | None:
     """Scan for an iBeacon advertising a specific UUID.
 
     iBeacon rides in Apple manufacturer data (0x004c) as type 0x02:
     `4c 00 02 15 <16-byte uuid> <major:2> <minor:2> <txpower:1>`.
+
+    ⚠️ BlueZ deduplicates advertisements by default and forwards only ONE
+    payload per device per scan session. An iPhone alternates AirDrop, Nearby
+    and the iBeacon on the same rotating address, so the iBeacon frame was
+    never surfaced until `duplicate-data` was enabled: measured 0 frames over
+    three minutes with it off, and the frame present within seconds with it on.
     """
     target = uuid.replace("-", "").lower()
     proc = subprocess.Popen(
-        ["bluetoothctl", "--timeout", str(int(seconds) + 1), "scan", "on"],
+        ["bluetoothctl"],
+        stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         text=True,
+        bufsize=1,
     )
     best: IBeaconReading | None = None
     cur_rssi = -99.0
     buf: list[str] = []
     collecting = False
 
-    def flush(buf: list[str], rssi: float) -> "IBeaconReading | None":
-        hexstr = "".join(buf).replace(" ", "")
+    def flush(items: list[str], rssi: float):
+        hexstr = "".join(items).replace(" ", "")
         try:
             raw = bytes.fromhex(hexstr)
         except ValueError:
@@ -321,13 +330,22 @@ def scan_ibeacon(uuid: str, seconds: float = 6.0) -> IBeaconReading | None:
             uuid=uuid, major=major, minor=minor, rssi=rssi, meters=rssi_to_meters(rssi)
         )
 
-    def consider(reading: "IBeaconReading | None") -> None:
+    def consider(reading):
         nonlocal best
         if reading is not None and (best is None or reading.rssi > best.rssi):
             best = reading
 
+    def write(cmd: str) -> None:
+        if proc.stdin:
+            proc.stdin.write(cmd + "\n")
+            proc.stdin.flush()
+
     deadline = time.monotonic() + seconds
     try:
+        write("menu scan")
+        write("duplicate-data on")
+        write("back")
+        write("scan on")
         while time.monotonic() < deadline:
             line = proc.stdout.readline() if proc.stdout else ""
             if not line:
@@ -348,12 +366,16 @@ def scan_ibeacon(uuid: str, seconds: float = 6.0) -> IBeaconReading | None:
                 if re.match(r"^\s+[0-9a-f]{2} ", line):
                     buf.append(line.replace("..", " ").strip())
                 else:
-                    # Payload finished; anything else on the line is not data.
                     consider(flush(buf, cur_rssi))
                     buf, collecting = [], False
         if collecting and buf:
             consider(flush(buf, cur_rssi))
     finally:
+        for cmd in ("scan off", "exit"):
+            try:
+                write(cmd)
+            except Exception:
+                pass
         try:
             proc.terminate()
             proc.wait(timeout=3)
