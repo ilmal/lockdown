@@ -19,6 +19,10 @@ GATT applications and advertisements is a privileged BlueZ operation.
 import struct
 import sys
 
+from dbus.mainloop.glib import DBusGMainLoop
+
+DBusGMainLoop(set_as_default=True)
+
 import dbus
 import dbus.exceptions
 import dbus.service
@@ -171,8 +175,8 @@ class Agent(dbus.service.Object):
         print(f"[agent] pin code requested for {device}")
         return "000000"
 
-    @dbus.service.method("org.bluez.Agent1", in_signature="o", out_signature="")
-    def DisplayPasskey(self, device, passkey, entered):
+    @dbus.service.method("org.bluez.Agent1", in_signature="ouu", out_signature="")
+    def DisplayPasskey(self, device, passkey, entered):  # noqa: N802 - D-Bus name
         print(f"[agent] passkey {passkey:06d} for {device}")
 
     @dbus.service.method("org.bluez.Agent1", in_signature="os", out_signature="")
@@ -180,7 +184,7 @@ class Agent(dbus.service.Object):
         print(f"[agent] pin {pin} for {device}")
 
     @dbus.service.method("org.bluez.Agent1", in_signature="ou", out_signature="")
-    def RequestConfirmation(self, device, passkey):
+    def RequestConfirmation(self, device, passkey):  # noqa: N802 - D-Bus name
         print(f"[agent] confirming {passkey:06d} for {device}")
 
     @dbus.service.method("org.bluez.Agent1", in_signature="o", out_signature="u")
@@ -192,7 +196,7 @@ class Agent(dbus.service.Object):
     def AuthorizeService(self, device, uuid):
         print(f"[agent] authorising {uuid} on {device}")
 
-    @dbus.service.method("org.bluez.Agent1", in_signature="o", out_signature="")
+    @dbus.service.method("org.bluez.Agent1", in_signature="", out_signature="")
     def Cancel(self):
         pass
 
@@ -247,10 +251,7 @@ def build_objects():
 
 def main():
     agent = Agent(BUS, Agent.PATH)
-    agent_props = dbus.Dictionary(
-        {"Capability": dbus.String("NoInputNoOutput")}, signature_type_check=False
-    )
-    aggr = dbus.Interface(BUS.get_object(BLUEZ, ADAPTER_PATH), "org.bluez.Adapter1")
+    aggr = dbus.Interface(BUS.get_object(BLUEZ, "/org/bluez"), "org.bluez.AgentManager1")
     try:
         aggr.RegisterAgent(dbus.ObjectPath(Agent.PATH), "NoInputNoOutput")
         aggr.RequestDefaultAgent(dbus.ObjectPath(Agent.PATH))
