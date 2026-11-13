@@ -99,3 +99,54 @@ matching must both go through `alignCrop`.
 The market standard for *liveness* (rejecting photos) is a different problem:
 it needs depth, IR, or a trained anti-spoof model. This project does none of
 that; see threat-model.md.
+
+## HID bond for iPhone identity: built, then blocked by extended advertising
+
+The plan: advertise as a BLE keyboard so iOS offers to bond; the bond exchanges
+the phone's **Identity Resolving Key (IRK)**; BlueZ then resolves every rotating
+address to the phone's stable identity forever. That is the only app-free,
+beacon-free, battery-free route to "my phone is here".
+
+`scripts/hid_peripheral.py` implements it: a HOGP keyboard service (0x1812 with
+HID Information, Report Map, Report + Report Reference, Protocol Mode), Battery
+and Device Information services, a NoInputNoOutput agent for Just Works pairing,
+and an LEAdvertisement1 with appearance 0x03C1. Registration works, the agent
+registers, and btmon confirms the packet goes on-air.
+
+It is still invisible to the iPhone, and the reason is structural:
+
+```
+manager->extended_add_cmds = btd_has_kernel_features(KERNEL_HAS_EXT_ADV_ADD_CMDS);
+...
+if (client->manager->extended_add_cmds)
+        return refresh_extended_adv(client, func);
+return refresh_legacy_adv(client, func);
+```
+
+BlueZ 5.85 (src/advertising.c) chooses extended advertising purely on whether
+the kernel supports the extended-advertising MGMT commands. There is no
+per-advertisement override, no `Legacy` property on LEAdvertisement1 in 5.85,
+and bluetoothctl's advertise menu has no toggle either. iOS's pairing list only
+scans **legacy** advertisements, so an extended-only peripheral never appears in
+Settings > Bluetooth — verified: btmon shows `LE Set Extended Advertising
+Enable` with our "Lockdown Key" on-air, and the iPhone lists nothing.
+
+Ways past it, ranked:
+
+1. **A Bluetooth 4.x USB dongle.** A controller without extended-advertising
+   support makes the kernel feature check fail, so BlueZ automatically takes the
+   legacy path on that adapter. The iPhone then sees the keyboard, bonding
+   works, and the IRK gives permanent identity. Cheap, reliable, zero phone
+   battery. The recommended long-term fix.
+2. **A small MGMT client** (`MGMT_OP_ADD_ADVERTISING`, the legacy kernel
+   command) to place a legacy advertisement instance directly in the kernel,
+   alongside the D-Bus GATT app. Works on this hardware with no purchase, but it
+   is custom code that must run as root and be re-armed at boot.
+3. Rebuild BlueZ with the legacy path forced — works, but replaces the system
+   bluetoothd on the main laptop. Not recommended.
+
+Note the phone-side reality that makes this all necessary: measured over a
+3-minute capture, not one byte of a stock iPhone's Continuity advertisement is
+stable across MAC rotation, and bonding (`bluetoothctl pair`) is refused with
+`ConnectionAttemptFailed` — so nothing in the stock advertisement can identify
+the phone.

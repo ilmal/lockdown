@@ -85,7 +85,7 @@ class Advertisement(dbus.service.Object):
                 "ServiceUUIDs": dbus.Array(["180f", "1812"], signature="s"),
                 "LocalName": dbus.String(LOCAL_NAME),
                 "Appearance": dbus.UInt16(APPEARANCE_KEYBOARD),
-                "Includes": dbus.Array(["tx-power"], signature="s"),
+                "Includes": dbus.Array([], signature="s"),
             }
         }
 
