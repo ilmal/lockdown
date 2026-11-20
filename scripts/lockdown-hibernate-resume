@@ -1,0 +1,5 @@
+#!/bin/sh
+# Cancel a hibernation pause started by lockdown-hibernate-pause.
+systemctl stop lockdown-hibernate-pause-timer.service 2>/dev/null || true
+systemctl unmask sleep.target hibernate.target suspend-then-hibernate.target 2>/dev/null || true
+echo "hibernation pause lifted"

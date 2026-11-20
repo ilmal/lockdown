@@ -1,0 +1,29 @@
+#!/bin/sh
+# Pause automatic hibernation for N hours (default 5).
+# Usage: lockdown-hibernate-pause [hours]
+# Root only: /usr/local/sbin/lockdown-hibernate-pause 2
+#
+# Blocks suspend, hibernate and suspend-then-hibernate from every path
+# (idle timer, lid switch, manual systemctl, authwatch). Plain suspend
+# is also blocked, which is what you want during a long build — nothing
+# should interrupt it.
+set -eu
+
+HOURS="${1:-5}"
+case "$HOURS" in
+    ''|*[!0-9]*) echo "usage: lockdown-hibernate-pause [hours]" >&2; exit 1 ;;
+esac
+SECS=$((HOURS * 3600))
+
+if systemctl is-active --quiet lockdown-hibernate-pause-timer.service 2>/dev/null; then
+    echo "already paused (until $(date -d "+$SECS seconds" '+%H:%M:%S'))"
+    systemctl list-timers lockdown-hibernate-pause-timer.timer --no-pager 2>/dev/null | tail -2
+    exit 0
+fi
+
+systemctl mask --quiet sleep.target hibernate.target suspend-then-hibernate.target
+
+systemd-run --unit=lockdown-hibernate-pause-timer --collect \
+    sh -c "sleep $SECS; systemctl unmask sleep.target hibernate.target suspend-then-hibernate.target; echo 'lockdown hibernation pause expired'"
+
+printf 'hibernation paused for %s hours. Resume early with: lockdown-hibernate-resume\n' "$HOURS"

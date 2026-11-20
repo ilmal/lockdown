@@ -141,7 +141,8 @@ Test, in order:
 
 If anything misbehaves:  sudo $BACKUP_DIR/rollback.sh
 
-Note: CanHibernate still reports "no". That is polkit's answer to an
-unprivileged caller and is expected; the rule above is what makes the actual
-hibernate call succeed.
+Note: HibernateMode is "shutdown" instead of "platform" because this laptop's
+firmware fails ACPI S4 with "Device or resource busy". In shutdown mode the
+kernel writes the image and does a clean power-off; resume still works via
+the initrd's resume=/resume_offset check.
 EOF
