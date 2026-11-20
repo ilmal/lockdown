@@ -88,7 +88,9 @@ systemctl daemon-reload
 systemctl enable --now presence-guard-authwatch.service
 
 say "reloading logind"
-systemctl restart systemd-logind.service
+# reload, never restart: logind is Type=notify-reload and its SIGHUP handler
+# re-parses the whole config, whereas a restart tears down live sessions.
+systemctl reload systemd-logind.service
 
 say "writing rollback script"
 cat > "$BACKUP_DIR/rollback.sh" <<EOF
@@ -98,7 +100,7 @@ set -euo pipefail
 systemctl disable --now presence-guard-authwatch.service || true
 rm -f "$AUTHWATCH_UNIT" "$AUTHWATCH_BIN" "$POLKIT_RULE" "$SLEEP_DROPIN" "$LOGIND_DROPIN"
 systemctl daemon-reload
-systemctl restart systemd-logind.service
+systemctl reload systemd-logind.service
 uid=\$(id -u "$TARGET_USER")
 restore() {
   sudo -u "$TARGET_USER" DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/\$uid/bus" \\

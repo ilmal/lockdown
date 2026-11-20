@@ -14,3 +14,6 @@ RestartSec=5
 # ProtectHome cannot be used here: the code runs from a venv under /home.
 ProtectSystem=strict
 PrivateTmp=yes
+
+[Install]
+WantedBy=multi-user.target
