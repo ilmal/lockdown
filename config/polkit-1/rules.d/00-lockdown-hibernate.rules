@@ -1,0 +1,26 @@
+// Ubuntu ships /usr/share/polkit-1/rules.d/com.ubuntu.desktop.rules, which
+// returns polkit.Result.NO for every login1 hibernate action ("Disable
+// hibernate by default in Ubuntu"). polkit stops at the first rule function
+// that returns a value, and files are evaluated by basename in lexical order,
+// so this "00-" file is consulted first and wins.
+//
+// Two subjects, both needed:
+//   - nils: the desktop session, so `presence-guard hibernate` and the phone
+//     endpoint work from the user session.
+//   - root: the authwatch service, which must act while the only session is
+//     the GDM greeter (no user session exists then).
+//
+// Scoped to hibernate only. Suspend, power-off and every other action keep
+// their stock policy.
+polkit.addRule(function(action, subject) {
+    if (action.id != "org.freedesktop.login1.hibernate" &&
+        action.id != "org.freedesktop.login1.hibernate-multiple-sessions" &&
+        action.id != "org.freedesktop.login1.hibernate-ignore-inhibit")
+        return;
+
+    if (subject.user == "root")
+        return polkit.Result.YES;
+
+    if (subject.user == "nils" && subject.local)
+        return polkit.Result.YES;
+});

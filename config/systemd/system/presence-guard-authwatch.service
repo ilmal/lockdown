@@ -1,0 +1,16 @@
+[Unit]
+Description=Lockdown failed-login hibernate watchdog
+Documentation=man:presence-guard(1)
+After=systemd-logind.service
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/presence-guard-authwatch
+Restart=always
+RestartSec=5
+
+# Root is required: it must react to failed GDM greeter logins, when the only
+# session on the machine is the greeter and no user session exists.
+# ProtectHome cannot be used here: the code runs from a venv under /home.
+ProtectSystem=strict
+PrivateTmp=yes

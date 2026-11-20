@@ -28,18 +28,50 @@ Configured 2026-11-10 by `scripts/setup-hibernate.sh`:
 | Swap ≥ RAM | **yes** — 65 GiB swap file, 61.2 GiB RAM |
 | Resume device in kernel cmdline | **yes** — `resume=UUID=… resume_offset=…` |
 | Resume module in initrd | **yes** — forced, because `74resume` self-disables at `0:0` |
-| `/sys/power/resume` set | **after the next reboot** |
+| `/sys/power/resume` set | **yes** (`252:1`, matching `resume_offset=501760`) |
 
 `vm.swappiness=1` keeps swap effectively unused except for hibernation.
 
-Until you reboot, `presence-guard hibernate` refuses and says so:
+**Everything above was already correct — and hibernation still failed.**
+Measured 2026-11-20: every requirement passed while `systemctl hibernate`
+returned `Access denied`. The blocker was not this machine's setup, it was
+Ubuntu's polkit policy. See the next section.
 
-```console
-$ presence-guard hibernate
-hibernation is not usable on this machine:
-  - resume= is configured but this boot started before it took effect;
-    reboot once, then hibernation will work
+### Ubuntu disables hibernation in polkit, not in the kernel
+
+`policykit-desktop-privileges` ships
+`/usr/share/polkit-1/rules.d/com.ubuntu.desktop.rules`, containing:
+
+```javascript
+// Disable hibernate by default in Ubuntu
+polkit.addRule(function(action, subject) {
+    if (action.id == "org.freedesktop.upower.hibernate" ||
+         action.id == "org.freedesktop.login1.hibernate" || ...) {
+            return polkit.Result.NO;
+    }
+});
 ```
+
+Confirm it on any machine:
+
+```bash
+pkcheck --action-id org.freedesktop.login1.suspend  --process $$   # authorized
+pkcheck --action-id org.freedesktop.login1.hibernate --process $$   # Not authorized
+systemctl hibernate                                                  # "Access denied"
+```
+
+`CanHibernate` likewise answers `"no"`. Note that `systemctl hibernate` failing
+with **"Access denied"** rather than **"not supported"** is the useful
+distinction: it proves the kernel-side checks in the table above all passed,
+and only authorization was refused.
+
+`scripts/install-hibernate-policy.sh` installs
+`/etc/polkit-1/rules.d/00-lockdown-hibernate.rules`, which returns `YES` for
+one user (and for root, which the authwatch service runs as). polkit evaluates
+files by basename in lexical order and stops at the first rule function that
+returns a value, so `00-` wins over the stock file without editing a
+dpkg-owned path.
+
 
 ## This machine is dracut, not initramfs-tools
 

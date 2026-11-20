@@ -23,6 +23,8 @@ Everything runs locally: no cloud, no model downloads, no telemetry, no account.
 | 📱 **Remote lock** | Lock the machine from your phone over Tailscale. |
 | ⚡ **Remote panic** | Lock, then power off — destroying the disk-encryption key held in RAM. |
 | 😴 **Hibernate** | Power off while keeping every tab and terminal. |
+| ⏲ **Hibernate when idle** | 35 minutes without input, or the lid shut, powers the machine off — destroying the disk key instead of leaving it in RAM for days. |
+| 🔒 **Hibernate after 3 bad logins** | Failed passwords at the login screen, lock screen or console end with the machine powered off. |
 | 🔌 **Fails safe** | Broken camera logs an error and keeps running; it never locks you out because hardware glitched. |
 
 ## The one idea worth understanding
@@ -187,6 +189,8 @@ unlocked laptop locks itself.
 | [remote-kill.md](docs/remote-kill.md) | Endpoint, token, polkit rule for poweroff |
 | [phone-setup.md](docs/phone-setup.md) | iOS Shortcut / Android widget |
 | [hibernate.md](docs/hibernate.md) | Session-preserving poweroff, and its traps |
+| [idle-hibernate.md](docs/idle-hibernate.md) | Lid switch and idle timers, and why each uses a different mechanism |
+| [failed-login-hibernate.md](docs/failed-login-hibernate.md) | Counting failures from the journal instead of editing PAM |
 | [design-notes.md](docs/design-notes.md) | Why these choices, measured not assumed |
 
 ## Requirements

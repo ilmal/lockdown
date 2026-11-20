@@ -3,7 +3,7 @@ from __future__ import annotations
 import argparse
 import sys
 
-from . import camera, config, guard, recognizer, remote, session
+from . import authwatch, camera, config, guard, recognizer, remote, session
 
 
 def _cmd_devices(args: argparse.Namespace) -> int:
@@ -147,6 +147,15 @@ def _cmd_hibernate(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_authwatch(args: argparse.Namespace) -> int:
+    authwatch.watch(
+        threshold=args.threshold,
+        window_seconds=args.window,
+        dry_run=args.dry_run,
+    )
+    return 0
+
+
 def _cmd_serve(args: argparse.Namespace) -> int:
     remote.serve(config.load())
     return 0
@@ -205,6 +214,15 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("hibernate", help="lock, then hibernate (keeps your session)")
     p.add_argument("--dry-run", action="store_true")
     p.set_defaults(func=_cmd_hibernate)
+
+    p = sub.add_parser(
+        "authwatch",
+        help="hibernate after repeated failed logins (runs as root, from systemd)",
+    )
+    p.add_argument("--threshold", type=int, default=3)
+    p.add_argument("--window", type=int, default=600, help="seconds a failure stays counted")
+    p.add_argument("--dry-run", action="store_true")
+    p.set_defaults(func=_cmd_authwatch)
 
     p = sub.add_parser("serve", help="run the Tailscale-only remote endpoint")
     p.set_defaults(func=_cmd_serve)
