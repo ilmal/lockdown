@@ -15,8 +15,7 @@ from . import session
 # pam_unix for every password prompt, so watching them leaves PAM untouched.
 _AUTH_LINE = re.compile(r"pam_unix\((?P<service>[^:)]+):auth\)")
 _SESSION_LINE = re.compile(r"pam_unix\((?P<service>[^:)]+):session\): session opened for user (?P<user>[^ (]+)")
-_IDENTIFY_FAILURE = re.compile(r"auth could not identify password for \[(?P<user>[^\]]+)\]")
-_FAILURE_USER = re.compile(r"user=(?P<user>\S+)")
+_FAILURE_USER = re.compile(r"(?<![A-Za-z])user=(?P<user>[^ =]+)(?![\w=])")
 _BY_USER = re.compile(r" by (?P<by>[^ (]+)\(uid=")
 
 # Session-opening lines are attributed to the account that supplied the
@@ -61,13 +60,15 @@ def classify(message: str, services: tuple[str, ...] = DEFAULT_SERVICES) -> tupl
     if not auth_line or auth_line.group("service") not in services:
         return None
 
-    identified = _IDENTIFY_FAILURE.search(message)
-    if identified:
-        return ("failure", identified.group("user"))
+    # Only the "authentication failure" line is counted. A single failed attempt
+    # also emits "auth could not identify password" from the PAM conversation
+    # retry, which must not count twice.
+    if "authentication failure" not in message:
+        return None
 
     failed = _FAILURE_USER.search(message)
     if failed:
-        return ("failure", failed.group("user").rstrip(","))
+        return ("failure", failed.group("user"))
 
     return None
 

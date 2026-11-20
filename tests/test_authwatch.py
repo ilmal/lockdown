@@ -14,10 +14,19 @@ def test_classify_gdm_password_failure():
     assert authwatch.classify(line) == ("failure", "nils")
 
 
-def test_classify_sudo_wrong_password():
-    line = "pam_unix(sudo:auth): auth could not identify password for [nils]"
+def test_sudo_wrong_password_counts_once():
+    """One wrong sudo password emits two lines (the pam conversation retry
+    logs a second failure after stdin runs out). Both must not count."""
+    wrong_password = [
+        "pam_unix(sudo:auth): authentication failure; logname=nils uid=1000 "
+        "euid=0 tty= ruser=nils rhost=  user=nils",
+        "pam_unix(sudo:auth): conversation failed",
+        "pam_unix(sudo:auth): auth could not identify password for [nils]",
+    ]
 
-    assert authwatch.classify(line) == ("failure", "nils")
+    got = [authwatch.classify(m) for m in wrong_password]
+
+    assert got == [("failure", "nils"), None, None]
 
 
 def test_classify_ignores_unwatched_service():
