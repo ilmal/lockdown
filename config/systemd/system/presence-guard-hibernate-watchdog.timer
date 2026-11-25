@@ -1,0 +1,10 @@
+[Unit]
+Description=Watch for a closed lid that failed to suspend
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=2min
+AccuracySec=30s
+
+[Install]
+WantedBy=timers.target
