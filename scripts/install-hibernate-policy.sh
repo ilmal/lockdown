@@ -40,7 +40,11 @@ as_user() {
 
 say "backing up"
 mkdir -p "$BACKUP_DIR"
-for f in "$POLKIT_RULE" "$SLEEP_DROPIN" "$LOGIND_DROPIN" "$AUTHWATCH_UNIT" "$AUTHWATCH_BIN"; do
+for f in "$POLKIT_RULE" "$SLEEP_DROPIN" "$LOGIND_DROPIN" "$AUTHWATCH_UNIT" "$AUTHWATCH_BIN" \
+         /etc/UPower/UPower.conf.d/90-critical-battery.conf \
+         /etc/systemd/system/presence-guard-hibernate-watchdog.service \
+         /etc/systemd/system/presence-guard-hibernate-watchdog.timer \
+         /usr/local/bin/presence-guard-hibernate-watchdog; do
   [ -e "$f" ] && cp -a "$f" "$BACKUP_DIR/$(basename "$f")"
 done
 as_user gsettings get org.gnome.settings-daemon.plugins.power sleep-inactive-ac-type \
@@ -66,6 +70,31 @@ install -Dm644 "$REPO/config/systemd/sleep.conf.d/10-lockdown.conf" "$SLEEP_DROP
 
 say "systemd: lid switch -> suspend-then-hibernate"
 install -Dm644 "$REPO/config/systemd/logind.conf.d/10-lockdown.conf" "$LOGIND_DROPIN"
+# The NVIDIA driver ships one hook per sleep operation, and only
+# nvidia-suspend/-hibernate are enabled by default. Without this one the
+# suspend-then-hibernate path never calls nvidia-sleep.sh, the GPU refuses the
+# PCI suspend with -EIO, and every attempt fails while the machine stays awake
+# with its lid shut. Measured 2026-11-23: 202 of 203 attempts failed and the
+# battery went 73% -> 5%.
+if systemctl list-unit-files nvidia-suspend-then-hibernate.service >/dev/null 2>&1; then
+  systemctl enable nvidia-suspend-then-hibernate.service
+fi
+
+say "UPower: hibernate at 10% instead of 2%"
+# At 2% there is not enough charge left to write the 10.6 GiB image, so the
+# battery dies mid-hibernate and the next boot finds no image.
+install -Dm644 "$REPO/config/UPower/UPower.conf.d/90-critical-battery.conf" \
+  /etc/UPower/UPower.conf.d/90-critical-battery.conf
+systemctl restart upower
+
+say "backstop: hibernate a lid-shut machine that failed to suspend"
+install -Dm755 "$REPO/scripts/hibernate-watchdog.sh" /usr/local/bin/presence-guard-hibernate-watchdog
+install -Dm644 "$REPO/config/systemd/system/presence-guard-hibernate-watchdog.service" \
+  /etc/systemd/system/presence-guard-hibernate-watchdog.service
+install -Dm644 "$REPO/config/systemd/system/presence-guard-hibernate-watchdog.timer" \
+  /etc/systemd/system/presence-guard-hibernate-watchdog.timer
+systemctl daemon-reload
+systemctl enable --now presence-guard-hibernate-watchdog.timer
 
 say "GNOME: idle -> hibernate after 35 minutes"
 # GNOME's idle monitor measures last input; logind's IdleActionSec only starts
@@ -98,7 +127,14 @@ cat > "$BACKUP_DIR/rollback.sh" <<EOF
 # Undo the hibernation policy installed on $STAMP.
 set -euo pipefail
 systemctl disable --now presence-guard-authwatch.service || true
+systemctl disable --now presence-guard-hibernate-watchdog.timer || true
+systemctl disable nvidia-suspend-then-hibernate.service || true
 rm -f "$AUTHWATCH_UNIT" "$AUTHWATCH_BIN" "$POLKIT_RULE" "$SLEEP_DROPIN" "$LOGIND_DROPIN"
+rm -f /etc/UPower/UPower.conf.d/90-critical-battery.conf
+rm -f /etc/systemd/system/presence-guard-hibernate-watchdog.service
+rm -f /etc/systemd/system/presence-guard-hibernate-watchdog.timer
+rm -f /usr/local/bin/presence-guard-hibernate-watchdog
+systemctl restart upower
 systemctl daemon-reload
 systemctl reload systemd-logind.service
 uid=\$(id -u "$TARGET_USER")

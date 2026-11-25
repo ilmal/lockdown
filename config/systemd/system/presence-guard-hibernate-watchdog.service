@@ -1,6 +1,5 @@
 [Unit]
 Description=Hibernate a laptop left running with its lid shut on battery
-Documentation=https://example.invalid/presence-guard/docs/idle-hibernate.md
 
 [Service]
 Type=oneshot

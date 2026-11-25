@@ -1,16 +1,15 @@
 #!/bin/sh
-# Hibernate a laptop whose lid is shut on battery but which is still running.
+# Hibernate a laptop left running with its lid shut.
 #
-# A closed lid that is still awake is a failed suspend. logind retries a
-# failing suspend for hours: on this laptop the NVIDIA PCI suspend callback
-# returns -EIO whenever nvidia-suspend-then-hibernate.service has not run, so
-# every attempt fails and the machine stays fully awake with the lid shut.
-# Measured 2026-11-23: 74% -> 0% in about two and a half hours, ending in a
-# hibernate that could not finish writing its image before the battery died.
+# A closed lid that is still awake is a failed suspend. logind then retries the
+# failing operation roughly every 30 seconds, forever, and the machine stays
+# fully powered on with the panel lit. Measured on this laptop 2026-11-23:
+# 202 failed suspend-then-hibernate attempts between 17:21 and 19:04 drained
+# the battery 73% -> 5% with the lid shut the whole time.
 #
-# The systemd timer that runs this only fires while the machine is awake
-# (WakeSystem is off, which is the default), so reaching the end of this script
-# already proves the lid has been shut on battery for a whole interval.
+# This is the backstop, not the primary path. Lid-close is meant to be handled
+# by logind (HandleLidSwitch=suspend-then-hibernate); this only fires when that
+# did not take the machine down.
 set -eu
 
 STATE=/run/presence-guard-hibernate-watchdog
@@ -20,23 +19,33 @@ BAT=/sys/class/power_supply/BAT0/capacity
 
 [ -r "$AC" ] && [ -r "$BAT" ] || exit 0
 
-# A battery at or below 10% is hibernated whatever the lid is doing.
-if [ "$(cat "$AC")" = "0" ] && [ "$(cat "$BAT")" -le 10 ]; then
-    logger -t presence-guard-watchdog "battery at $(cat "$BAT")% on battery, hibernating"
+on_ac=$(cat "$AC")
+capacity=$(cat "$BAT")
+
+hibernate() {
+    logger -t presence-guard-watchdog "$1, hibernating"
+    rm -f "$STATE"
     exec systemctl hibernate
+}
+
+# Last line of defence: a battery this low is hibernated whatever the lid is
+# doing, so a stuck machine parks itself instead of dying hard.
+if [ "$on_ac" = "0" ] && [ "$capacity" -le 10 ]; then
+    hibernate "battery at ${capacity}% on battery"
 fi
 
-# Docked: an external display attached means a shut lid changes nothing.
-for s in /sys/class/drm/card*-*/status; do
-    [ -r "$s" ] || continue
-    case "$s" in *eDP*) continue ;; esac
-    [ "$(cat "$s")" = "connected" ] && exit 0
+# An attached external display means a shut lid is not a request to sleep;
+# this mirrors logind's HandleLidSwitchDocked=ignore.
+for status in /sys/class/drm/card*-*/status; do
+    [ -r "$status" ] || continue
+    case "$status" in *eDP*) continue ;; esac
+    [ "$(cat "$status")" = "connected" ] && exit 0
 done
 
 lid=$(busctl get-property org.freedesktop.login1 /org/freedesktop/login1 \
         org.freedesktop.login1.Manager LidClosed 2>/dev/null | awk '{print $2}')
 
-if [ "$(cat "$AC")" = "1" ] || [ "${lid:-false}" != "true" ]; then
+if [ "${lid:-false}" != "true" ]; then
     rm -f "$STATE"
     exit 0
 fi
@@ -51,7 +60,4 @@ fi
 
 [ $((now - since)) -ge "$GRACE" ] || exit 0
 
-logger -t presence-guard-watchdog \
-    "lid shut on battery for $(( (now - since) / 60 )) min without suspending, hibernating"
-rm -f "$STATE"
-exec systemctl hibernate
+hibernate "lid shut for $(( (now - since) / 60 )) min and still running"
