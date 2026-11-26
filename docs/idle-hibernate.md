@@ -137,3 +137,61 @@ drop-in `config/UPower/UPower.conf.d/90-critical-battery.conf` sets
 UPower has no `.conf.d` documented in the package, but `upowerd` contains the
 `UPower.conf.d` string and ships `/etc/UPower/UPower.conf.d/README.md`, so
 drop-ins are the supported route and avoid editing a dpkg-owned file.
+
+## Update 2026-11-26: hibernation itself is broken — policy is suspend-only
+
+The NVIDIA hook above really was broken and really is fixed: since 2026-11-25
+every lid-close suspend has succeeded and the panel goes dark. But it did not
+end the drained-battery reports, and the journal from the next drain shows why:
+
+```
+10:28:25  PM: hibernation: hibernation entry     <- lid closed 09:53, suspend,
+10:28:25  Performing sleep operation 'hibernate'    then hibernate after 35 min
+   ...8 hours of silence...
+18:29:35  Lid opened / Marking nosave pages /
+          Preallocating image memory / hibernation exit
+```
+
+Across **all 13 hibernation attempts since 2026-11-16** the kernel has never
+logged `PM: hibernation: Saving image data pages` or `Wrote … kbytes` — not
+once. It enters hibernation, never finishes writing the image, never powers
+off, and sits in a half-frozen state drawing **~5-6 W**. The battery evidence
+is unambiguous: the 2026-11-26 attempt drained **77% → 7% in 7.75 h (~9%/h)
+while "hibernated"**; the 2026-11-24 → 25 attempt lost 34% over 38 h. A real
+S4 draws a fraction of a watt. When the lid is opened the kernel unwinds the
+entry path ("hibernation exit"), the session comes back from RAM, and it *looks*
+like hibernation worked — which is exactly why this hid for so long.
+
+This firmware's ACPI S4 was already known broken (`platform` mode fails with
+"Device or resource busy", which is why `HibernateMode=shutdown` was chosen);
+the `shutdown` path hangs too. There is no working hibernate to fall back to.
+
+### Policy is therefore suspend-only
+
+- `HandleLidSwitch=suspend` (both AC and battery), not suspend-then-hibernate.
+  s2idle is proven on this laptop: three consecutive 13-15 h nights on Nov
+  16-19 with no power loss, and every suspend since 2026-11-25 has succeeded.
+- GNOME idle: `sleep-inactive-*-type='suspend'` (was `'hibernate'` — leaving
+  that alone would hang the machine after 35 idle minutes).
+- UPower: `CriticalPowerAction=PowerOff` at 10%. Hibernate as the critical
+  action would hang and drain to death anyway; a clean power-off at 10% beats a
+  dead filesystem.
+- `presence-guard-hibernate-watchdog.timer`: ≤10% on battery → power-off; lid
+  shut 10+ min and still running → retry suspend (it can no longer hibernate,
+  because hibernation hangs).
+
+### `presence-guard authwatch` is affected
+
+`authwatch` hibernates after repeated failed logins to kill the in-RAM LUKS
+key. With hibernation hanging, the machine black-screens but keeps running with
+the key resident — the security property silently disappears. Until
+hibernation is fixed, that action should be power-off (also kills the key,
+loses the session). Not changed automatically; see
+`docs/failed-login-hibernate.md` for the trade-off.
+
+### To actually fix hibernation (needs a test session)
+
+The hang is before the image write — either a device freeze callback
+(`dpm_suspend_start(PMSG_FREEZE)`) or the snapshot path. Bisecting it needs one
+controlled session with `no_console_suspend` / `pm_test=devices`, i.e. real
+hibernate attempts with the console watching. Not safe to run blind.

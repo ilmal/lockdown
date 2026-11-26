@@ -1,15 +1,24 @@
 #!/bin/sh
-# Hibernate a laptop left running with its lid shut.
+# Backstop for a laptop that did not go down when the lid shut.
 #
-# A closed lid that is still awake is a failed suspend. logind then retries the
-# failing operation roughly every 30 seconds, forever, and the machine stays
-# fully powered on with the panel lit. Measured on this laptop 2026-11-23:
-# 202 failed suspend-then-hibernate attempts between 17:21 and 19:04 drained
-# the battery 73% -> 5% with the lid shut the whole time.
+# Every automatic path on this laptop now leads to s2idle (lid -> suspend,
+# idle -> suspend), which works. This timer exists for the day that stops
+# being true, plus one hard floor:
 #
-# This is the backstop, not the primary path. Lid-close is meant to be handled
-# by logind (HandleLidSwitch=suspend-then-hibernate); this only fires when that
-# did not take the machine down.
+#   - battery at or below 10% on battery power -> clean POWER OFF.
+#     Not hibernate: on this machine hibernation hangs the kernel in a ~5 W
+#     half-frozen state and drains ~9%/h while looking asleep, so it is
+#     strictly worse than a clean shutdown at that point.
+#
+#   - lid shut for 10+ minutes and still running -> suspend failed; retry it
+#     (the watchdog cannot hibernate, see above, and a retry is free).
+#
+#   - external display attached -> do nothing; that is "docked", matching
+#     logind's HandleLidSwitchDocked=ignore.
+#
+# The systemd timer only fires while the machine is awake, so reaching the end
+# of this script is itself proof the lid has been shut (or the battery has been
+# low) for a whole interval without anything having taken the machine down.
 set -eu
 
 STATE=/run/presence-guard-hibernate-watchdog
@@ -22,16 +31,11 @@ BAT=/sys/class/power_supply/BAT0/capacity
 on_ac=$(cat "$AC")
 capacity=$(cat "$BAT")
 
-hibernate() {
-    logger -t presence-guard-watchdog "$1, hibernating"
-    rm -f "$STATE"
-    exec systemctl hibernate
-}
-
-# Last line of defence: a battery this low is hibernated whatever the lid is
-# doing, so a stuck machine parks itself instead of dying hard.
+# Hard floor: a clean power-off beats a hanging hibernate or a dead battery.
 if [ "$on_ac" = "0" ] && [ "$capacity" -le 10 ]; then
-    hibernate "battery at ${capacity}% on battery"
+    logger -t presence-guard-watchdog "battery at ${capacity}% on battery, powering off"
+    rm -f "$STATE"
+    exec systemctl poweroff
 fi
 
 # An attached external display means a shut lid is not a request to sleep;
@@ -60,4 +64,7 @@ fi
 
 [ $((now - since)) -ge "$GRACE" ] || exit 0
 
-hibernate "lid shut for $(( (now - since) / 60 )) min and still running"
+logger -t presence-guard-watchdog \
+    "lid shut for $(( (now - since) / 60 )) min and still running, retrying suspend"
+rm -f "$STATE"
+exec systemctl suspend

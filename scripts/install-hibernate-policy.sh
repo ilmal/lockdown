@@ -100,8 +100,8 @@ say "GNOME: idle -> hibernate after 35 minutes"
 # GNOME's idle monitor measures last input; logind's IdleActionSec only starts
 # after the session reports itself idle, which lags by the blank-screen timeout.
 # Setting these to hibernate is what makes "35 min without touching it" work.
-as_user gsettings set org.gnome.settings-daemon.plugins.power sleep-inactive-ac-type 'hibernate'
-as_user gsettings set org.gnome.settings-daemon.plugins.power sleep-inactive-battery-type 'hibernate'
+as_user gsettings set org.gnome.settings-daemon.plugins.power sleep-inactive-ac-type 'suspend'
+as_user gsettings set org.gnome.settings-daemon.plugins.power sleep-inactive-battery-type 'suspend'
 as_user gsettings set org.gnome.settings-daemon.plugins.power sleep-inactive-ac-timeout 2100
 as_user gsettings set org.gnome.settings-daemon.plugins.power sleep-inactive-battery-timeout 2100
 
