@@ -1,27 +1,30 @@
 #!/bin/sh
-# Put a lid-shut laptop back to sleep when nothing else will.
+# Put the laptop back to sleep when nothing else will.
 #
-# This is a backstop, not the primary path. Lid close is handled by logind
-# (HandleLidSwitch=suspend), which works. This covers three ways that fails:
+# Backstop, not the primary path. Lid close is handled by logind
+# (HandleLidSwitch=suspend) and idle suspend by GNOME; both work. This covers
+# the ways they fail on this machine:
 #
-#   1. The machine wakes with the lid still shut and stays awake. Measured
-#      2026-11-27: it suspended correctly at 18:41, a spurious wake fired at
-#      03:58, and it then sat fully awake for 75 min at ~21 W with the panel lit
-#      and the lid closed, draining 43% -> 10%.
+#   1. A spurious wake leaves it running with the lid shut. Measured
+#      2026-11-27: suspended correctly at 18:41, woke at 03:58, then sat fully
+#      awake for 75 min at ~21 W with the panel lit, draining 43% -> 10%.
 #
-#   2. logind misses the lid event. The EC on this laptop also logs "The lid
-#      device is not compliant to SW_LID"; a missed close means nothing is ever
-#      suspended.
+#   2. That same wake also delivered a bogus "lid opened" event, so the lid
+#      state cannot be trusted as the sole trigger.
 #
-#   3. GNOME blanks and suspends on idle exactly as the user configured, so if
-#      the lid is shut and the machine is still up, that policy has not fired
-#      either — which is what a held idle inhibitor looks like.
+#   3. GNOME's sleep-inactive-* policy never fires while any app holds an idle
+#      inhibitor. VLC holds one ("Playing some media.") for as long as it is
+#      open, which pinned this laptop awake through the whole 2026-11-27 night.
 #
-# All three are detected the same way: read the lid from /proc/acpi/button/lid,
-# which is polled from the EC and does not depend on the event stream that gets
-# lost, and require it to stay shut across several ticks. A oneshot unit only
-# runs while the system is awake, so reaching the end of this script already
-# proves the machine stayed up for a whole interval.
+# So there are two independent triggers, either of which is enough:
+#
+#   - the lid has been shut for GRACE seconds (read from /proc/acpi/button/lid,
+#     polled from the EC, not from the event stream that goes missing), or
+#   - the machine is on battery, has gone IDLE_LIMIT seconds without input, and
+#     nothing is actually playing sound.
+#
+# A oneshot timer only runs while the system is awake, so reaching the end of
+# this script already proves the machine stayed up for a whole interval.
 #
 # Exemptions mirror logind's own docked rule:
 #   - an external display attached -> a shut lid is not a sleep request
@@ -30,9 +33,11 @@
 set -eu
 
 STATE=/run/presence-guard-watchdog-since
-GRACE=600      # seconds a shut lid must persist before acting
-STALE=2400     # a stamp older than this means we slept; restart the clock
-BAT_FLOOR=10   # percent: at or below this, power off no matter what
+GRACE=600       # seconds a shut lid must persist before acting
+STALE=2400      # a stamp older than this means we slept; restart the clock
+BAT_FLOOR=10    # percent: at or below this, power off no matter what
+IDLE_LIMIT=2100 # input-idle seconds before forced suspend on battery (matches
+                # sleep-inactive-battery-timeout, so we only act if GNOME did not)
 LID=/proc/acpi/button/lid/LID0/state
 AC=/sys/class/power_supply/AC/online
 BAT=/sys/class/power_supply/BAT0/capacity
@@ -45,16 +50,11 @@ capacity=$(cat "$BAT")
 
 # Hard floor, before anything else: at this charge the only safe action is a
 # clean power-off. Hibernate is not an option on this laptop — it never
-# completes, hanging at ~5 W and draining the pack while looking asleep.
+# completes, hanging at ~5 W while looking asleep, draining the pack.
 if [ "$on_ac" = "0" ] && [ "$capacity" -le "$BAT_FLOOR" ]; then
     log "battery at ${capacity}% on battery, powering off"
     rm -f "$STATE"
     exec systemctl poweroff
-fi
-
-if [ ! -r "$LID" ] || [ "$(awk '{print $2}' "$LID")" != "closed" ]; then
-    rm -f "$STATE"
-    exit 0
 fi
 
 # Docked: an external display means a shut lid is not a request to sleep.
@@ -69,34 +69,48 @@ if systemd-inhibit --list --mode=block --no-legend 2>/dev/null | grep -q ' sleep
     exit 0
 fi
 
-# Audio playing: the user is watching or listening, so leave the machine alone.
-# Only an ACTIVE playback stream counts — a paused or merely-open player must not
-# keep the machine awake, which is exactly how VLC (holding an idle inhibitor
-# for as long as it is open, with "Playing some media." as its stated reason)
-# pinned this laptop awake through a whole night on 2026-11-27.
 uid=$(loginctl list-sessions --no-legend 2>/dev/null | awk '{print $2}' | head -1)
-if [ -n "${uid:-}" ] && [ -S "/run/user/$uid/bus" ]; then
-    user=$(id -un "$uid" 2>/dev/null || true)
-    if [ -n "$user" ] && runuser -u "$user" -- env \
-            XDG_RUNTIME_DIR="/run/user/$uid" wpctl status 2>/dev/null \
-            | grep -qE 'output_[A-Z]+ *> .*\[active\]'; then
+user=$(id -un "${uid:-0}" 2>/dev/null || true)
+as_user() { runuser -u "$user" -- env XDG_RUNTIME_DIR="/run/user/$uid" "$@"; }
+
+# Audio actually playing: the user is watching or listening, so leave it alone.
+# Only an ACTIVE playback stream counts; a paused or merely open player must not
+# hold the machine awake, which is exactly how VLC pinned it on 2026-11-27.
+if [ -n "${uid:-}" ] && [ -n "$user" ] && [ -S "/run/user/$uid/bus" ]; then
+    if as_user wpctl status 2>/dev/null | grep -qE 'output_[A-Z]+ *> .*\[active\]'; then
         exit 0
     fi
 fi
 
-now=$(date +%s)
-since=0
-[ -f "$STATE" ] && since=$(cat "$STATE")
+suspend() {
+    log "$1, suspending"
+    rm -f "$STATE"
+    exec systemctl suspend
+}
 
-# A stamp older than STALE means the machine slept in between (the timer does
-# not run while suspended), so this is a fresh wake rather than a long idle run.
-if [ "$since" -eq 0 ] || [ $((now - since)) -ge "$STALE" ]; then
-    echo "$now" > "$STATE"
-    exit 0
+now=$(date +%s)
+
+if [ -r "$LID" ] && [ "$(awk '{print $2}' "$LID")" = "closed" ]; then
+    since=0
+    [ -f "$STATE" ] && since=$(cat "$STATE")
+    # A stamp older than STALE means the machine slept in between (the timer
+    # does not run while suspended): a fresh wake, not a long idle run.
+    if [ "$since" -eq 0 ] || [ $((now - since)) -ge "$STALE" ]; then
+        echo "$now" > "$STATE"
+        exit 0
+    fi
+    [ $((now - since)) -ge "$GRACE" ] || exit 0
+    suspend "lid shut for $(( (now - since) / 60 )) min and still running"
 fi
 
-[ $((now - since)) -ge "$GRACE" ] || exit 0
-
-log "lid shut for $(( (now - since) / 60 )) min and still running, suspending"
 rm -f "$STATE"
-exec systemctl suspend
+
+# Lid state is unreliable here, so also act on plain input idleness on battery.
+[ "$on_ac" = "0" ] || exit 0
+idle_ms=$(as_user gdbus call --session --dest org.gnome.Mutter.IdleMonitor \
+    --object-path /org/gnome/Mutter/IdleMonitor/Core \
+    --method org.gnome.Mutter.IdleMonitor.GetIdletime 2>/dev/null | tr -dc '0-9')
+[ -n "$idle_ms" ] || exit 0
+[ "$idle_ms" -ge $((IDLE_LIMIT * 1000)) ] || exit 0
+
+suspend "no input for $(( idle_ms / 1000 / 60 )) min on battery"

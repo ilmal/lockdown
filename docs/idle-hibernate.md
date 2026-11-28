@@ -195,3 +195,56 @@ The hang is before the image write — either a device freeze callback
 (`dpm_suspend_start(PMSG_FREEZE)`) or the snapshot path. Bisecting it needs one
 controlled session with `no_console_suspend` / `pm_test=devices`, i.e. real
 hibernate attempts with the console watching. Not safe to run blind.
+
+## Update 2026-11-28: the machine wakes itself, and VLC pins it awake
+
+The third drained night was **neither** of the two earlier causes. Suspend
+worked: the lid shut at 2026-11-26 18:41, the journal is completely silent until
+03:58 the next morning, and `systemd-suspend.service` reports a normal return.
+What followed is the failure:
+
+| time | event |
+|---|---|
+| 18:41 | lid shut → suspend succeeded (9h15m asleep) |
+| 03:58 | **spurious wake** — lid still shut, and logind logged a bogus "Lid opened" |
+| 03:58–05:13 | fully awake, lid shut, panel lit, **~21 W**, battery 43% → 10% |
+| 05:13 | the 10% watchdog floor powered the machine off |
+
+The wake correlates with a power-source change: the NVIDIA driver logs
+`rm_power_source_change_event: Failed to handle Power Source change event` at
+the exact wake second, and upower's history flips from `charging` to
+`discharging` across the gap. **The AC adapter is a wakeup source on this
+platform** (`/sys/class/wakeup/wakeup31/name` → `AC`, writable as root).
+
+### Why nothing put it back to sleep
+
+GNOME is configured to suspend after 35 minutes idle, and it did not. The cause
+is an idle inhibitor: **VLC holds an `idle` inhibitor for as long as it is open**,
+with the stated reason "Playing some media." — regardless of whether anything is
+actually playing. With `disable-screensaver=1` (the default) that inhibitor is
+taken at startup. Verified live: the session reported **18 minutes** of input
+idle, well past the 10-minute blank and the 35-minute suspend thresholds, with
+the screen still lit and `org.gnome.SessionManager.IsInhibited(8)` returning
+**true** for `vlc`.
+
+VLC was running through the whole event (started 2026-11-26 08:42, restarted at
+04:01 right after the wake), which is why GNOME never slept.
+
+### Fixes
+
+- `~/.config/vlc/vlcrc`: `disable-screensaver=0`, so VLC only inhibits idle
+  while something is actually playing.
+- The watchdog now reads the lid from `/proc/acpi/button/lid` (polled from the
+  EC) instead of logind's event-derived `LidClosed`, because that property read
+  `false` for the whole 75 minutes even though the lid was shut.
+- The watchdog skips when audio is genuinely playing (`wpctl` shows an
+  `[active]` output stream), so videos are never interrupted, but a paused or
+  merely-open player no longer counts.
+
+### Known remaining risk
+
+The AC adapter can still wake the machine. It is a wakeup source and can be
+disabled with `echo disabled > /sys/class/power_supply/AC/power/wakeup`; this is
+deliberately **not** done, because it would also stop the machine waking when a
+charger is plugged in, and the watchdog now recovers from a spurious wake within
+ten minutes anyway.
